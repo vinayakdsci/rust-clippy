@@ -1,4 +1,4 @@
-use clippy_utils::consts::constant_simple;
+use clippy_utils::consts::ConstEvalCtxt;
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::{indent_of, reindent_multiline, snippet_opt};
 use clippy_utils::ty::is_type_diagnostic_item;
@@ -35,6 +35,17 @@ pub(super) fn check_if_let<'tcx>(
     else_expr: &'tcx Expr<'_>,
 ) {
     let ty = cx.typeck_results().expr_ty(let_expr);
+    let then_ty = cx.typeck_results().expr_ty(then_expr);
+    // The signature is `fn unwrap_or<T>(self: Option<T>, default: T) -> T`.
+    // When `expr_adjustments(then_expr).is_empty()`, `T` should equate to `default`'s type.
+    // Otherwise, type error will occur.
+    if cx.typeck_results().expr_adjustments(then_expr).is_empty()
+        && let rustc_middle::ty::Adt(_did, args) = ty.kind()
+        && let Some(some_ty) = args.first().and_then(|arg| arg.as_type())
+        && some_ty != then_ty
+    {
+        return;
+    }
     check_and_lint(cx, expr, let_pat, let_expr, then_expr, peel_blocks(else_expr), ty);
 }
 
@@ -58,7 +69,7 @@ fn check_and_lint<'tcx>(
         && let Some(ty_name) = find_type_name(cx, ty)
         && let Some(or_body_snippet) = snippet_opt(cx, else_expr.span)
         && let Some(indent) = indent_of(cx, expr.span)
-        && constant_simple(cx, cx.typeck_results(), else_expr).is_some()
+        && ConstEvalCtxt::new(cx).eval_simple(else_expr).is_some()
     {
         lint(cx, expr, let_expr, ty_name, or_body_snippet, indent);
     }

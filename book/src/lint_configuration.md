@@ -348,6 +348,7 @@ Suppress lints whenever the suggested change would cause breakage for other crat
 * [`enum_variant_names`](https://rust-lang.github.io/rust-clippy/master/index.html#enum_variant_names)
 * [`large_types_passed_by_value`](https://rust-lang.github.io/rust-clippy/master/index.html#large_types_passed_by_value)
 * [`linkedlist`](https://rust-lang.github.io/rust-clippy/master/index.html#linkedlist)
+* [`needless_pass_by_ref_mut`](https://rust-lang.github.io/rust-clippy/master/index.html#needless_pass_by_ref_mut)
 * [`option_option`](https://rust-lang.github.io/rust-clippy/master/index.html#option_option)
 * [`rc_buffer`](https://rust-lang.github.io/rust-clippy/master/index.html#rc_buffer)
 * [`rc_mutex`](https://rust-lang.github.io/rust-clippy/master/index.html#rc_mutex)
@@ -363,7 +364,7 @@ Suppress lints whenever the suggested change would cause breakage for other crat
 
 
 ## `await-holding-invalid-types`
-
+The list of types which may not be held across an await point.
 
 **Default Value:** `[]`
 
@@ -454,7 +455,7 @@ default configuration of Clippy. By default, any configuration will replace the 
 * `doc-valid-idents = ["ClipPy"]` would replace the default list with `["ClipPy"]`.
 * `doc-valid-idents = ["ClipPy", ".."]` would append `ClipPy` to the default list.
 
-**Default Value:** `["KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "DevOps", "DirectX", "ECMAScript", "GPLv2", "GPLv3", "GitHub", "GitLab", "IPv4", "IPv6", "ClojureScript", "CoffeeScript", "JavaScript", "PureScript", "TypeScript", "WebAssembly", "NaN", "NaNs", "OAuth", "GraphQL", "OCaml", "OpenDNS", "OpenGL", "OpenMP", "OpenSSH", "OpenSSL", "OpenStreetMap", "OpenTelemetry", "WebGL", "WebGL2", "WebGPU", "TensorFlow", "TrueType", "iOS", "macOS", "FreeBSD", "TeX", "LaTeX", "BibTeX", "BibLaTeX", "MinGW", "CamelCase"]`
+**Default Value:** `["TiB", "CoreGraphics", "CoffeeScript", "TeX", "Direct2D", "PiB", "DirectX", "NetBSD", "OAuth", "NaN", "OpenType", "WebGL2", "WebTransport", "JavaScript", "OpenSSL", "OpenSSH", "EiB", "PureScript", "OpenAL", "MiB", "WebAssembly", "MinGW", "CoreFoundation", "WebGPU", "ClojureScript", "CamelCase", "OpenDNS", "NaNs", "OpenMP", "GitLab", "KiB", "sRGB", "CoreText", "macOS", "TypeScript", "GiB", "OpenExr", "YCbCr", "OpenTelemetry", "OpenBSD", "FreeBSD", "GPLv2", "PostScript", "WebP", "LaTeX", "TensorFlow", "AccessKit", "TrueType", "OpenStreetMap", "OpenGL", "DevOps", "OCaml", "WebRTC", "WebGL", "BibLaTeX", "GitHub", "GraphQL", "iOS", "Direct3D", "BibTeX", "DirectWrite", "GPLv3", "IPv6", "WebSocket", "IPv4", "ECMAScript"]`
 
 ---
 **Affected lints:**
@@ -667,6 +668,8 @@ crate. For example, `pub(crate)` items.
 ## `msrv`
 The minimum rust version that the project supports. Defaults to the `rust-version` field in `Cargo.toml`
 
+**Default Value:** `current version`
+
 ---
 **Affected lints:**
 * [`allow_attributes`](https://rust-lang.github.io/rust-clippy/master/index.html#allow_attributes)
@@ -678,6 +681,7 @@ The minimum rust version that the project supports. Defaults to the `rust-versio
 * [`cast_abs_to_unsigned`](https://rust-lang.github.io/rust-clippy/master/index.html#cast_abs_to_unsigned)
 * [`checked_conversions`](https://rust-lang.github.io/rust-clippy/master/index.html#checked_conversions)
 * [`cloned_instead_of_copied`](https://rust-lang.github.io/rust-clippy/master/index.html#cloned_instead_of_copied)
+* [`collapsible_match`](https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_match)
 * [`collapsible_str_replace`](https://rust-lang.github.io/rust-clippy/master/index.html#collapsible_str_replace)
 * [`deprecated_cfg_attr`](https://rust-lang.github.io/rust-clippy/master/index.html#deprecated_cfg_attr)
 * [`derivable_impls`](https://rust-lang.github.io/rust-clippy/master/index.html#derivable_impls)
@@ -859,6 +863,8 @@ The maximum number of lines a function or method can have
 ## `trivial-copy-size-limit`
 The maximum size (in bytes) to consider a `Copy` type for passing by value instead of by
 reference. By default there is no limit
+
+**Default Value:** `target_pointer_width * 2`
 
 ---
 **Affected lints:**

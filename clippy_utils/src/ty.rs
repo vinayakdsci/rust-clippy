@@ -96,11 +96,7 @@ pub fn contains_ty_adt_constructor_opaque<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'
                         return false;
                     }
 
-                    for (predicate, _span) in cx
-                        .tcx
-                        .explicit_item_super_predicates(def_id)
-                        .instantiate_identity_iter_copied()
-                    {
+                    for (predicate, _span) in cx.tcx.explicit_item_super_predicates(def_id).iter_identity_copied() {
                         match predicate.kind().skip_binder() {
                             // For `impl Trait<U>`, it will register a predicate of `T: Trait<U>`, so we go through
                             // and check substitutions to find `U`.
@@ -527,19 +523,6 @@ pub fn needs_ordered_drop<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
     }
 
     needs_ordered_drop_inner(cx, ty, &mut FxHashSet::default())
-}
-
-/// Peels off all references on the type. Returns the underlying type and the number of references
-/// removed.
-pub fn peel_mid_ty_refs(ty: Ty<'_>) -> (Ty<'_>, usize) {
-    fn peel(ty: Ty<'_>, count: usize) -> (Ty<'_>, usize) {
-        if let ty::Ref(_, ty, _) = ty.kind() {
-            peel(*ty, count + 1)
-        } else {
-            (ty, count)
-        }
-    }
-    peel(ty, 0)
 }
 
 /// Peels off all references on the type. Returns the underlying type, the number of references
@@ -1186,12 +1169,12 @@ pub struct InteriorMut<'tcx> {
 }
 
 impl<'tcx> InteriorMut<'tcx> {
-    pub fn new(cx: &LateContext<'tcx>, ignore_interior_mutability: &[String]) -> Self {
+    pub fn new(tcx: TyCtxt<'tcx>, ignore_interior_mutability: &[String]) -> Self {
         let ignored_def_ids = ignore_interior_mutability
             .iter()
             .flat_map(|ignored_ty| {
                 let path: Vec<&str> = ignored_ty.split("::").collect();
-                def_path_def_ids(cx, path.as_slice())
+                def_path_def_ids(tcx, path.as_slice())
             })
             .collect();
 
@@ -1201,10 +1184,10 @@ impl<'tcx> InteriorMut<'tcx> {
         }
     }
 
-    pub fn without_pointers(cx: &LateContext<'tcx>, ignore_interior_mutability: &[String]) -> Self {
+    pub fn without_pointers(tcx: TyCtxt<'tcx>, ignore_interior_mutability: &[String]) -> Self {
         Self {
             ignore_pointers: true,
-            ..Self::new(cx, ignore_interior_mutability)
+            ..Self::new(tcx, ignore_interior_mutability)
         }
     }
 
@@ -1332,19 +1315,13 @@ pub fn deref_chain<'cx, 'tcx>(cx: &'cx LateContext<'tcx>, ty: Ty<'tcx>) -> impl 
 /// If you need this, you should wrap this call in `clippy_utils::ty::deref_chain().any(...)`.
 pub fn get_adt_inherent_method<'a>(cx: &'a LateContext<'_>, ty: Ty<'_>, method_name: Symbol) -> Option<&'a AssocItem> {
     if let Some(ty_did) = ty.ty_adt_def().map(AdtDef::did) {
-        cx.tcx
-            .inherent_impls(ty_did)
-            .into_iter()
-            .flatten()
-            .map(|&did| {
-                cx.tcx
-                    .associated_items(did)
-                    .filter_by_name_unhygienic(method_name)
-                    .next()
-                    .filter(|item| item.kind == AssocKind::Fn)
-            })
-            .next()
-            .flatten()
+        cx.tcx.inherent_impls(ty_did).into_iter().flatten().find_map(|&did| {
+            cx.tcx
+                .associated_items(did)
+                .filter_by_name_unhygienic(method_name)
+                .next()
+                .filter(|item| item.kind == AssocKind::Fn)
+        })
     } else {
         None
     }

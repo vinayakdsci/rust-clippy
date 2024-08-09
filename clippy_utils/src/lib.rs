@@ -10,7 +10,6 @@
 #![feature(assert_matches)]
 #![feature(unwrap_infallible)]
 #![recursion_limit = "512"]
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![allow(
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
@@ -89,22 +88,24 @@ use std::hash::BuildHasherDefault;
 use std::iter::{once, repeat};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use clippy_config::types::DisallowedPath;
 use itertools::Itertools;
 use rustc_ast::ast::{self, LitKind, RangeLimits};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::packed::Pu128;
 use rustc_data_structures::unhash::UnhashMap;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::def_id::{CrateNum, DefId, LocalDefId, LocalModDefId, LOCAL_CRATE};
+use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId, LocalModDefId, LOCAL_CRATE};
 use rustc_hir::definitions::{DefPath, DefPathData};
 use rustc_hir::hir_id::{HirIdMap, HirIdSet};
 use rustc_hir::intravisit::{walk_expr, FnKind, Visitor};
 use rustc_hir::LangItem::{OptionNone, OptionSome, ResultErr, ResultOk};
 use rustc_hir::{
-    self as hir, def, Arm, ArrayLen, BindingMode, Block, BlockCheckMode, Body, ByRef, Closure, Destination, Expr,
-    ExprField, ExprKind, FnDecl, FnRetTy, GenericArgs, HirId, Impl, ImplItem, ImplItemKind, ImplItemRef, Item,
-    ItemKind, LangItem, LetStmt, MatchSource, Mutability, Node, OwnerId, Param, Pat, PatKind, Path, PathSegment,
-    PrimTy, QPath, Stmt, StmtKind, TraitItem, TraitItemKind, TraitItemRef, TraitRef, TyKind, UnOp,
+    self as hir, def, Arm, ArrayLen, BindingMode, Block, BlockCheckMode, Body, ByRef, Closure, ConstArgKind,
+    ConstContext, Destination, Expr, ExprField, ExprKind, FnDecl, FnRetTy, GenericArgs, HirId, Impl, ImplItem,
+    ImplItemKind, ImplItemRef, Item, ItemKind, LangItem, LetStmt, MatchSource, Mutability, Node, OwnerId, OwnerNode,
+    Param, Pat, PatKind, Path, PathSegment, PrimTy, QPath, Stmt, StmtKind, TraitItem, TraitItemKind, TraitItemRef,
+    TraitRef, TyKind, UnOp,
 };
 use rustc_lexer::{tokenize, TokenKind};
 use rustc_lint::{LateContext, Level, Lint, LintContext};
@@ -124,7 +125,7 @@ use rustc_span::{sym, Span};
 use rustc_target::abi::Integer;
 use visitors::Visitable;
 
-use crate::consts::{constant, mir_to_const, Constant};
+use crate::consts::{mir_to_const, ConstEvalCtxt, Constant};
 use crate::higher::Range;
 use crate::ty::{adt_and_variant_of_res, can_partially_move_ty, expr_sig, is_copy, is_recursively_primitive_type};
 use crate::visitors::for_each_expr_without_closures;
@@ -209,17 +210,42 @@ pub fn local_is_initialized(cx: &LateContext<'_>, local: HirId) -> bool {
     false
 }
 
-/// Returns `true` if the given `NodeId` is inside a constant context
+/// Checks if we are currently in a const context (e.g. `const fn`, `static`/`const` initializer).
 ///
-/// # Example
+/// The current context is determined based on the current body which is set before calling a lint's
+/// entry point (any function on `LateLintPass`). If you need to check in a different context use
+/// `tcx.hir().is_inside_const_context(_)`.
 ///
-/// ```rust,ignore
-/// if in_constant(cx, expr.hir_id) {
-///     // Do something
-/// }
-/// ```
-pub fn in_constant(cx: &LateContext<'_>, id: HirId) -> bool {
-    cx.tcx.hir().is_inside_const_context(id)
+/// Do not call this unless the `LateContext` has an enclosing body. For release build this case
+/// will safely return `false`, but debug builds will ICE. Note that `check_expr`, `check_block`,
+/// `check_pat` and a few other entry points will always have an enclosing body. Some entry points
+/// like `check_path` or `check_ty` may or may not have one.
+pub fn is_in_const_context(cx: &LateContext<'_>) -> bool {
+    debug_assert!(cx.enclosing_body.is_some(), "`LateContext` has no enclosing body");
+    cx.enclosing_body.is_some_and(|id| {
+        cx.tcx
+            .hir()
+            .body_const_context(cx.tcx.hir().body_owner_def_id(id))
+            .is_some()
+    })
+}
+
+/// Returns `true` if the given `HirId` is inside an always constant context.
+///
+/// This context includes:
+///  * const/static items
+///  * const blocks (or inline consts)
+///  * associated constants
+pub fn is_inside_always_const_context(tcx: TyCtxt<'_>, hir_id: HirId) -> bool {
+    use ConstContext::{Const, ConstFn, Static};
+    let hir = tcx.hir();
+    let Some(ctx) = hir.body_const_context(hir.enclosing_body_owner(hir_id)) else {
+        return false;
+    };
+    match ctx {
+        ConstFn => false,
+        Static(_) | Const { inline: _ } => true,
+    }
 }
 
 /// Checks if a `Res` refers to a constructor of a `LangItem`
@@ -566,9 +592,8 @@ fn find_primitive_impls<'tcx>(tcx: TyCtxt<'tcx>, name: &str) -> impl Iterator<It
         "u128" => SimplifiedType::Uint(UintTy::U128),
         "f32" => SimplifiedType::Float(FloatTy::F32),
         "f64" => SimplifiedType::Float(FloatTy::F64),
-        #[allow(trivial_casts)]
         _ => {
-            return Result::<_, rustc_errors::ErrorGuaranteed>::Ok(&[] as &[_])
+            return Result::<&[_], rustc_errors::ErrorGuaranteed>::Ok(&[])
                 .into_iter()
                 .flatten()
                 .copied();
@@ -655,7 +680,7 @@ fn item_children_by_name(tcx: TyCtxt<'_>, def_id: DefId, name: Symbol) -> Vec<Re
 /// would have both a [`DefKind::Mod`] and [`DefKind::Macro`].
 ///
 /// This function is expensive and should be used sparingly.
-pub fn def_path_res(cx: &LateContext<'_>, path: &[&str]) -> Vec<Res> {
+pub fn def_path_res(tcx: TyCtxt<'_>, path: &[&str]) -> Vec<Res> {
     fn find_crates(tcx: TyCtxt<'_>, name: Symbol) -> impl Iterator<Item = DefId> + '_ {
         tcx.crates(())
             .iter()
@@ -663,8 +688,6 @@ pub fn def_path_res(cx: &LateContext<'_>, path: &[&str]) -> Vec<Res> {
             .filter(move |&num| tcx.crate_name(num) == name)
             .map(CrateNum::as_def_id)
     }
-
-    let tcx = cx.tcx;
 
     let (base, mut path) = match *path {
         [primitive] => {
@@ -716,16 +739,28 @@ pub fn def_path_res(cx: &LateContext<'_>, path: &[&str]) -> Vec<Res> {
 }
 
 /// Resolves a def path like `std::vec::Vec` to its [`DefId`]s, see [`def_path_res`].
-pub fn def_path_def_ids(cx: &LateContext<'_>, path: &[&str]) -> impl Iterator<Item = DefId> {
-    def_path_res(cx, path).into_iter().filter_map(|res| res.opt_def_id())
+pub fn def_path_def_ids(tcx: TyCtxt<'_>, path: &[&str]) -> impl Iterator<Item = DefId> {
+    def_path_res(tcx, path).into_iter().filter_map(|res| res.opt_def_id())
+}
+
+/// Creates a map of disallowed items to the reason they were disallowed.
+pub fn create_disallowed_map(
+    tcx: TyCtxt<'_>,
+    disallowed: &'static [DisallowedPath],
+) -> DefIdMap<(&'static str, Option<&'static str>)> {
+    disallowed
+        .iter()
+        .map(|x| (x.path(), x.path().split("::").collect::<Vec<_>>(), x.reason()))
+        .flat_map(|(name, path, reason)| def_path_def_ids(tcx, &path).map(move |id| (id, (name, reason))))
+        .collect()
 }
 
 /// Convenience function to get the `DefId` of a trait by path.
 /// It could be a trait or trait alias.
 ///
 /// This function is expensive and should be used sparingly.
-pub fn get_trait_def_id(cx: &LateContext<'_>, path: &[&str]) -> Option<DefId> {
-    def_path_res(cx, path).into_iter().find_map(|res| match res {
+pub fn get_trait_def_id(tcx: TyCtxt<'_>, path: &[&str]) -> Option<DefId> {
+    def_path_res(tcx, path).into_iter().find_map(|res| match res {
         Res::Def(DefKind::Trait | DefKind::TraitAlias, trait_id) => Some(trait_id),
         _ => None,
     })
@@ -881,7 +916,8 @@ pub fn is_default_equivalent(cx: &LateContext<'_>, e: &Expr<'_>) -> bool {
         },
         ExprKind::Tup(items) | ExprKind::Array(items) => items.iter().all(|x| is_default_equivalent(cx, x)),
         ExprKind::Repeat(x, ArrayLen::Body(len)) => {
-            if let ExprKind::Lit(const_lit) = cx.tcx.hir().body(len.body).value.kind
+            if let ConstArgKind::Anon(anon_const) = len.kind
+                && let ExprKind::Lit(const_lit) = cx.tcx.hir().body(anon_const.body).value.kind
                 && let LitKind::Int(v, _) = const_lit.node
                 && v <= 32
                 && is_default_equivalent(cx, x)
@@ -910,7 +946,8 @@ fn is_default_equivalent_from(cx: &LateContext<'_>, from_func: &Expr<'_>, arg: &
             }) => return sym.is_empty() && is_path_lang_item(cx, ty, LangItem::String),
             ExprKind::Array([]) => return is_path_diagnostic_item(cx, ty, sym::Vec),
             ExprKind::Repeat(_, ArrayLen::Body(len)) => {
-                if let ExprKind::Lit(const_lit) = cx.tcx.hir().body(len.body).value.kind
+                if let ConstArgKind::Anon(anon_const) = len.kind
+                    && let ExprKind::Lit(const_lit) = cx.tcx.hir().body(anon_const.body).value.kind
                     && let LitKind::Int(v, _) = const_lit.node
                 {
                     return v == 0 && is_path_diagnostic_item(cx, ty, sym::Vec);
@@ -1386,7 +1423,7 @@ pub fn get_enclosing_loop_or_multi_call_closure<'tcx>(
                 ExprKind::Closure { .. } | ExprKind::Loop(..) => return Some(e),
                 _ => (),
             },
-            Node::Stmt(_) | Node::Block(_) | Node::LetStmt(_) | Node::Arm(_) => (),
+            Node::Stmt(_) | Node::Block(_) | Node::LetStmt(_) | Node::Arm(_) | Node::ExprField(_) => (),
             _ => break,
         }
     }
@@ -1544,8 +1581,8 @@ pub fn is_range_full(cx: &LateContext<'_>, expr: &Expr<'_>, container_path: Opti
             if let rustc_ty::Adt(_, subst) = ty.kind()
                 && let bnd_ty = subst.type_at(0)
                 && let Some(min_val) = bnd_ty.numeric_min_val(cx.tcx)
-                && let Some(min_const) = mir_to_const(cx, Const::from_ty_const(min_val, bnd_ty, cx.tcx))
-                && let Some(start_const) = constant(cx, cx.typeck_results(), start)
+                && let Some(min_const) = mir_to_const(cx.tcx, Const::from_ty_const(min_val, bnd_ty, cx.tcx))
+                && let Some(start_const) = ConstEvalCtxt::new(cx).eval(start)
             {
                 start_const == min_const
             } else {
@@ -1557,8 +1594,8 @@ pub fn is_range_full(cx: &LateContext<'_>, expr: &Expr<'_>, container_path: Opti
                 if let rustc_ty::Adt(_, subst) = ty.kind()
                     && let bnd_ty = subst.type_at(0)
                     && let Some(max_val) = bnd_ty.numeric_max_val(cx.tcx)
-                    && let Some(max_const) = mir_to_const(cx, Const::from_ty_const(max_val, bnd_ty, cx.tcx))
-                    && let Some(end_const) = constant(cx, cx.typeck_results(), end)
+                    && let Some(max_const) = mir_to_const(cx.tcx, Const::from_ty_const(max_val, bnd_ty, cx.tcx))
+                    && let Some(end_const) = ConstEvalCtxt::new(cx).eval(end)
                 {
                     end_const == max_const
                 } else {
@@ -1589,7 +1626,9 @@ pub fn is_integer_const(cx: &LateContext<'_>, e: &Expr<'_>, value: u128) -> bool
         return true;
     }
     let enclosing_body = cx.tcx.hir().enclosing_body_owner(e.hir_id);
-    if let Some(Constant::Int(v)) = constant(cx, cx.tcx.typeck(enclosing_body), e) {
+    if let Some(Constant::Int(v)) =
+        ConstEvalCtxt::with_env(cx.tcx, cx.tcx.param_env(enclosing_body), cx.tcx.typeck(enclosing_body)).eval(e)
+    {
         return value == v;
     }
     false
@@ -1903,8 +1942,18 @@ pub fn any_parent_has_attr(tcx: TyCtxt<'_>, node: HirId, symbol: Symbol) -> bool
     false
 }
 
-pub fn any_parent_is_automatically_derived(tcx: TyCtxt<'_>, node: HirId) -> bool {
-    any_parent_has_attr(tcx, node, sym::automatically_derived)
+/// Checks if the given HIR node is inside an `impl` block with the `automatically_derived`
+/// attribute.
+pub fn in_automatically_derived(tcx: TyCtxt<'_>, id: HirId) -> bool {
+    tcx.hir()
+        .parent_owner_iter(id)
+        .filter(|(_, node)| matches!(node, OwnerNode::Item(item) if matches!(item.kind, ItemKind::Impl(_))))
+        .any(|(id, _)| {
+            has_attr(
+                tcx.hir().attrs(tcx.local_def_id_to_hir_id(id.def_id)),
+                sym::automatically_derived,
+            )
+        })
 }
 
 /// Matches a function call with the given path and returns the arguments.
@@ -2471,6 +2520,17 @@ pub fn peel_hir_ty_refs<'a>(mut ty: &'a hir::Ty<'a>) -> (&'a hir::Ty<'a>, usize)
     }
 }
 
+/// Peels off all references on the type. Returns the underlying type and the number of references
+/// removed.
+pub fn peel_middle_ty_refs(mut ty: Ty<'_>) -> (Ty<'_>, usize) {
+    let mut count = 0;
+    while let rustc_ty::Ref(_, dest_ty, _) = ty.kind() {
+        ty = *dest_ty;
+        count += 1;
+    }
+    (ty, count)
+}
+
 /// Removes `AddrOf` operators (`&`) or deref operators (`*`), but only if a reference type is
 /// dereferenced. An overloaded deref such as `Vec` to slice would not be removed.
 pub fn peel_ref_operators<'hir>(cx: &LateContext<'_>, mut expr: &'hir Expr<'hir>) -> &'hir Expr<'hir> {
@@ -2591,16 +2651,6 @@ pub fn inherits_cfg(tcx: TyCtxt<'_>, def_id: LocalDefId) -> bool {
             .parent_iter(tcx.local_def_id_to_hir_id(def_id))
             .flat_map(|(parent_id, _)| hir.attrs(parent_id))
             .any(|attr| attr.has_name(sym::cfg))
-}
-
-/// Checks whether item either has `test` attribute applied, or
-/// is a module with `test` in its name.
-///
-/// Note: Add `//@compile-flags: --test` to UI tests with a `#[test]` function
-pub fn is_test_module_or_function(tcx: TyCtxt<'_>, item: &Item<'_>) -> bool {
-    is_in_test_function(tcx, item.hir_id())
-        || matches!(item.kind, ItemKind::Mod(..))
-            && item.ident.name.as_str().split('_').any(|a| a == "test" || a == "tests")
 }
 
 /// Walks up the HIR tree from the given expression in an attempt to find where the value is

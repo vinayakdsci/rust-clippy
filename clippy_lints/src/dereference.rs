@@ -1,9 +1,10 @@
 use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_hir_and_then};
 use clippy_utils::source::{snippet_with_applicability, snippet_with_context};
 use clippy_utils::sugg::has_enclosing_paren;
-use clippy_utils::ty::{implements_trait, is_manually_drop, peel_mid_ty_refs};
+use clippy_utils::ty::{implements_trait, is_manually_drop};
 use clippy_utils::{
-    expr_use_ctxt, get_parent_expr, is_block_like, is_lint_allowed, path_to_local, DefinedTy, ExprUseNode,
+    expr_use_ctxt, get_parent_expr, is_block_like, is_lint_allowed, path_to_local, peel_middle_ty_refs, DefinedTy,
+    ExprUseNode,
 };
 use core::mem;
 use rustc_ast::util::parser::{PREC_PREFIX, PREC_UNAMBIGUOUS};
@@ -175,6 +176,7 @@ struct StateData<'tcx> {
     adjusted_ty: Ty<'tcx>,
 }
 
+#[derive(Debug)]
 struct DerefedBorrow {
     count: usize,
     msg: &'static str,
@@ -182,6 +184,7 @@ struct DerefedBorrow {
     for_field_access: Option<Symbol>,
 }
 
+#[derive(Debug)]
 enum State {
     // Any number of deref method calls.
     DerefMethod {
@@ -744,7 +747,7 @@ fn in_postfix_position<'tcx>(cx: &LateContext<'tcx>, e: &'tcx Expr<'tcx>) -> boo
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum TyCoercionStability {
     Deref,
     Reborrow,
@@ -944,7 +947,7 @@ fn report<'tcx>(
             let (expr_str, _expr_is_macro_call) =
                 snippet_with_context(cx, expr.span, data.first_expr.span.ctxt(), "..", &mut app);
             let ty = typeck.expr_ty(expr);
-            let (_, ref_count) = peel_mid_ty_refs(ty);
+            let (_, ref_count) = peel_middle_ty_refs(ty);
             let deref_str = if ty_changed_count >= ref_count && ref_count != 0 {
                 // a deref call changing &T -> &U requires two deref operators the first time
                 // this occurs. One to remove the reference, a second to call the deref impl.
@@ -1042,16 +1045,28 @@ fn report<'tcx>(
                 return;
             }
 
-            let (prefix, precedence) = if let Some(mutability) = mutability
-                && !typeck.expr_ty(expr).is_ref()
+            let ty = typeck.expr_ty(expr);
+
+            // `&&[T; N]`, or `&&..&[T; N]` (src) cannot coerce to `&[T]` (dst).
+            if let ty::Ref(_, dst, _) = data.adjusted_ty.kind()
+                && dst.is_slice()
             {
-                let prefix = match mutability {
-                    Mutability::Not => "&",
-                    Mutability::Mut => "&mut ",
-                };
-                (prefix, PREC_PREFIX)
-            } else {
-                ("", 0)
+                let (src, n_src_refs) = peel_middle_ty_refs(ty);
+                if n_src_refs >= 2 && src.is_array() {
+                    return;
+                }
+            }
+
+            let (prefix, precedence) = match mutability {
+                Some(mutability) if !ty.is_ref() => {
+                    let prefix = match mutability {
+                        Mutability::Not => "&",
+                        Mutability::Mut => "&mut ",
+                    };
+                    (prefix, PREC_PREFIX)
+                },
+                None if !ty.is_ref() && data.adjusted_ty.is_ref() => ("&", 0),
+                _ => ("", 0),
             };
             span_lint_hir_and_then(
                 cx,

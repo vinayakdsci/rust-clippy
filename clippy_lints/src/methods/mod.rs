@@ -131,9 +131,9 @@ mod waker_clone_wake;
 mod wrong_self_convention;
 mod zst_offset;
 
-use bind_instead_of_map::BindInsteadOfMap;
 use clippy_config::msrvs::{self, Msrv};
-use clippy_utils::consts::{constant, Constant};
+use clippy_config::Conf;
+use clippy_utils::consts::{ConstEvalCtxt, Constant};
 use clippy_utils::diagnostics::{span_lint, span_lint_and_help};
 use clippy_utils::macros::FormatArgsStorage;
 use clippy_utils::ty::{contains_ty_adt_constructor_opaque, implements_trait, is_copy, is_type_diagnostic_item};
@@ -628,12 +628,11 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of `_.and_then(|x| Some(y))`, `_.and_then(|x| Ok(y))` or
-    /// `_.or_else(|x| Err(y))`.
+    /// Checks for usage of `_.and_then(|x| Some(y))`, `_.and_then(|x| Ok(y))`
+    /// or `_.or_else(|x| Err(y))`.
     ///
     /// ### Why is this bad?
-    /// Readability, this can be written more concisely as
-    /// `_.map(|x| y)` or `_.map_err(|x| y)`.
+    /// This can be written more concisely as `_.map(|x| y)` or `_.map_err(|x| y)`.
     ///
     /// ### Example
     /// ```no_run
@@ -750,7 +749,6 @@ declare_clippy_lint! {
     ///
      /// ### Example
     /// ```no_run
-    /// # #![allow(unused)]
     /// (0_i32..10)
     ///     .filter(|n| n.checked_add(1).is_some())
     ///     .map(|n| n.checked_add(1).unwrap());
@@ -758,7 +756,6 @@ declare_clippy_lint! {
     ///
     /// Use instead:
     /// ```no_run
-    /// # #[allow(unused)]
     /// (0_i32..10).filter_map(|n| n.checked_add(1));
     /// ```
     #[clippy::version = "1.51.0"]
@@ -851,7 +848,6 @@ declare_clippy_lint! {
     ///
     /// ### Example
     /// ```no_run
-    /// # #![allow(unused)]
     /// let vec = vec![1];
     /// vec.iter().find(|x| **x == 0).is_some();
     ///
@@ -863,7 +859,6 @@ declare_clippy_lint! {
     /// let vec = vec![1];
     /// vec.iter().any(|x| *x == 0);
     ///
-    /// # #[allow(unused)]
     /// !"hello world".contains("world");
     /// ```
     #[clippy::version = "pre 1.29.0"]
@@ -1506,7 +1501,6 @@ declare_clippy_lint! {
     ///
     /// ### Example
     /// ```no_run
-    /// # #[allow(unused)]
     /// (0..3).fold(false, |acc, x| acc || x > 2);
     /// ```
     ///
@@ -1898,7 +1892,9 @@ declare_clippy_lint! {
     /// trait.
     ///
     /// ### Why is this bad?
-    /// It is recommended style to use collect. See
+    /// If it's needed to create a collection from the contents of an iterator, the `Iterator::collect(_)`
+    /// method is preferred. However, when it's needed to specify the container type,
+    /// `Vec::from_iter(_)` can be more readable than using a turbofish (e.g. `_.collect::<Vec<_>>()`). See
     /// [FromIterator documentation](https://doc.rust-lang.org/std/iter/trait.FromIterator.html)
     ///
     /// ### Example
@@ -1916,6 +1912,14 @@ declare_clippy_lint! {
     /// let v: Vec<i32> = five_fives.collect();
     ///
     /// assert_eq!(v, vec![5, 5, 5, 5, 5]);
+    /// ```
+    /// but prefer to use
+    /// ```no_run
+    /// let numbers: Vec<i32> = FromIterator::from_iter(1..=5);
+    /// ```
+    /// instead of
+    /// ```no_run
+    /// let numbers = (1..=5).collect::<Vec<_>>();
     /// ```
     #[clippy::version = "1.49.0"]
     pub FROM_ITER_INSTEAD_OF_COLLECT,
@@ -2009,13 +2013,11 @@ declare_clippy_lint! {
     ///
     /// ### Example
     /// ```no_run
-    /// # #[allow(unused)]
     /// "Hello".bytes().nth(3);
     /// ```
     ///
     /// Use instead:
     /// ```no_run
-    /// # #[allow(unused)]
     /// "Hello".as_bytes().get(3);
     /// ```
     #[clippy::version = "1.52.0"]
@@ -2060,7 +2062,6 @@ declare_clippy_lint! {
     ///
     /// ### Example
     /// ```no_run
-    /// # #![allow(unused)]
     /// let some_vec = vec![0, 1, 2, 3];
     ///
     /// some_vec.iter().count();
@@ -3657,7 +3658,6 @@ declare_clippy_lint! {
     ///
     /// ### Example
     /// ```no_run
-    /// # #![allow(unused)]
     /// let owned_string = "This is a string".to_owned();
     /// owned_string.as_str().as_bytes()
     /// # ;
@@ -3665,7 +3665,6 @@ declare_clippy_lint! {
     ///
     /// Use instead:
     /// ```no_run
-    /// # #![allow(unused)]
     /// let owned_string = "This is a string".to_owned();
     /// owned_string.as_bytes()
     /// # ;
@@ -4121,7 +4120,7 @@ declare_clippy_lint! {
     /// ```no_run
     /// let x = Some(0).inspect(|x| println!("{x}"));
     /// ```
-    #[clippy::version = "1.78.0"]
+    #[clippy::version = "1.81.0"]
     pub MANUAL_INSPECT,
     complexity,
     "use of `map` returning the original item"
@@ -4132,27 +4131,20 @@ pub struct Methods {
     msrv: Msrv,
     allow_expect_in_tests: bool,
     allow_unwrap_in_tests: bool,
-    allowed_dotfiles: FxHashSet<String>,
+    allowed_dotfiles: FxHashSet<&'static str>,
     format_args: FormatArgsStorage,
 }
 
 impl Methods {
-    #[must_use]
-    pub fn new(
-        avoid_breaking_exported_api: bool,
-        msrv: Msrv,
-        allow_expect_in_tests: bool,
-        allow_unwrap_in_tests: bool,
-        mut allowed_dotfiles: FxHashSet<String>,
-        format_args: FormatArgsStorage,
-    ) -> Self {
-        allowed_dotfiles.extend(DEFAULT_ALLOWED_DOTFILES.iter().map(ToString::to_string));
+    pub fn new(conf: &'static Conf, format_args: FormatArgsStorage) -> Self {
+        let mut allowed_dotfiles: FxHashSet<_> = conf.allowed_dotfiles.iter().map(|s| &**s).collect();
+        allowed_dotfiles.extend(DEFAULT_ALLOWED_DOTFILES);
 
         Self {
-            avoid_breaking_exported_api,
-            msrv,
-            allow_expect_in_tests,
-            allow_unwrap_in_tests,
+            avoid_breaking_exported_api: conf.avoid_breaking_exported_api,
+            msrv: conf.msrv.clone(),
+            allow_expect_in_tests: conf.allow_expect_in_tests,
+            allow_unwrap_in_tests: conf.allow_unwrap_in_tests,
             allowed_dotfiles,
             format_args,
         }
@@ -4513,8 +4505,8 @@ impl Methods {
                     }
                 },
                 ("and_then", [arg]) => {
-                    let biom_option_linted = bind_instead_of_map::OptionAndThenSome::check(cx, expr, recv, arg);
-                    let biom_result_linted = bind_instead_of_map::ResultAndThenOk::check(cx, expr, recv, arg);
+                    let biom_option_linted = bind_instead_of_map::check_and_then_some(cx, expr, recv, arg);
+                    let biom_result_linted = bind_instead_of_map::check_and_then_ok(cx, expr, recv, arg);
                     if !biom_option_linted && !biom_result_linted {
                         unnecessary_lazy_eval::check(cx, expr, recv, arg, "and");
                     }
@@ -4854,7 +4846,7 @@ impl Methods {
                     open_options::check(cx, expr, recv);
                 },
                 ("or_else", [arg]) => {
-                    if !bind_instead_of_map::ResultOrElseErrInfo::check(cx, expr, recv, arg) {
+                    if !bind_instead_of_map::check_or_else_err(cx, expr, recv, arg) {
                         unnecessary_lazy_eval::check(cx, expr, recv, arg, "or");
                     }
                 },
@@ -4923,13 +4915,13 @@ impl Methods {
                     str_split::check(cx, expr, recv, arg);
                 },
                 ("splitn" | "rsplitn", [count_arg, pat_arg]) => {
-                    if let Some(Constant::Int(count)) = constant(cx, cx.typeck_results(), count_arg) {
+                    if let Some(Constant::Int(count)) = ConstEvalCtxt::new(cx).eval(count_arg) {
                         suspicious_splitn::check(cx, name, expr, recv, count);
                         str_splitn::check(cx, name, expr, recv, pat_arg, count, &self.msrv);
                     }
                 },
                 ("splitn_mut" | "rsplitn_mut", [count_arg, _]) => {
-                    if let Some(Constant::Int(count)) = constant(cx, cx.typeck_results(), count_arg) {
+                    if let Some(Constant::Int(count)) = ConstEvalCtxt::new(cx).eval(count_arg) {
                         suspicious_splitn::check(cx, name, expr, recv, count);
                     }
                 },

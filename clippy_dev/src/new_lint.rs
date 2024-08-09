@@ -140,7 +140,7 @@ fn add_lint(lint: &LintData<'_>, enable_msrv: bool) -> io::Result<()> {
 
     let new_lint = if enable_msrv {
         format!(
-            "store.register_{lint_pass}_pass(move |{ctor_arg}| Box::new({module_name}::{camel_name}::new(msrv())));\n    ",
+            "store.register_{lint_pass}_pass(move |{ctor_arg}| Box::new({module_name}::{camel_name}::new(conf)));\n    ",
             lint_pass = lint.pass,
             ctor_arg = if lint.pass == "late" { "_" } else { "" },
             module_name = lint.name,
@@ -273,7 +273,8 @@ fn get_lint_file_contents(lint: &LintData<'_>, enable_msrv: bool) -> String {
     result.push_str(&if enable_msrv {
         formatdoc!(
             r#"
-            use clippy_utils::msrvs::{{self, Msrv}};
+            use clippy_config::msrvs::{{self, Msrv}};
+            use clippy_config::Conf;
             {pass_import}
             use rustc_lint::{{{context_import}, {pass_type}, LintContext}};
             use rustc_session::impl_lint_pass;
@@ -301,9 +302,8 @@ fn get_lint_file_contents(lint: &LintData<'_>, enable_msrv: bool) -> String {
             }}
 
             impl {name_camel} {{
-                #[must_use]
-                pub fn new(msrv: Msrv) -> Self {{
-                    Self {{ msrv }}
+                pub fn new(conf: &'static Conf) -> Self {{
+                    Self {{ msrv: conf.msrv.clone() }}
                 }}
             }}
 
@@ -399,7 +399,7 @@ fn create_lint_for_ty(lint: &LintData<'_>, enable_msrv: bool, ty: &str) -> io::R
         let _: fmt::Result = writedoc!(
             lint_file_contents,
             r#"
-                use clippy_utils::msrvs::{{self, Msrv}};
+                use clippy_config::msrvs::{{self, Msrv}};
                 use rustc_lint::{{{context_import}, LintContext}};
 
                 use super::{name_upper};
