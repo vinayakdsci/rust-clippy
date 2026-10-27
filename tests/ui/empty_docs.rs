@@ -1,12 +1,15 @@
 //@aux-build:proc_macro_attr.rs
 
-#![allow(unused)]
 #![warn(clippy::empty_docs)]
-#![allow(clippy::mixed_attributes_style)]
+#![expect(clippy::mixed_attributes_style)]
 #![feature(extern_types)]
+
+extern crate proc_macros;
+use proc_macros::external;
 
 mod outer {
     //!
+    //~^ empty_docs
 
     /// this is a struct
     struct Bananas {
@@ -15,8 +18,10 @@ mod outer {
     }
 
     ///
+    //~^ empty_docs
     enum Warn {
         ///
+        //~^ empty_docs
         A,
         B,
     }
@@ -28,16 +33,19 @@ mod outer {
     }
 
     #[doc = ""]
+    //~^ empty_docs
     fn warn_about_this() {}
 
     #[doc = ""]
     #[doc = ""]
+    //~^^ empty_docs
     fn this_doesn_warn() {}
 
     #[doc = "a fine function"]
     fn this_is_fine() {}
 
     ///
+    //~^ empty_docs
     mod inner {
         ///
         fn dont_warn_inner_outer() {
@@ -51,6 +59,7 @@ mod outer {
 
         fn warn() {
             /*! */
+            //~^ empty_docs
         }
 
         fn dont_warn() {
@@ -59,6 +68,7 @@ mod outer {
 
         trait NoDoc {
             ///
+            //~^ empty_docs
             fn some() {}
         }
     }
@@ -67,6 +77,7 @@ mod outer {
         /// lint y
         x: i32,
         ///
+        //~^ empty_docs
         y: i32,
     }
 }
@@ -75,7 +86,7 @@ mod issue_12377 {
     use proc_macro_attr::with_empty_docs;
 
     #[with_empty_docs]
-    extern "C" {
+    unsafe extern "C" {
         type Test;
     }
 
@@ -83,4 +94,12 @@ mod issue_12377 {
     struct Foo {
         a: u8,
     }
+}
+
+external! {
+    #[doc = $("")]
+    //~^ empty_docs
+    $(
+        fn issue_16382() {}
+    )
 }

@@ -1,22 +1,28 @@
-#![allow(clippy::similar_names)] // `expr` and `expn`
+//! Utilities for analyzing macro invocations and expansions.
 
-use crate::visitors::{for_each_expr_without_closures, Descend};
+#![expect(clippy::similar_names)] // `expr` and `expn`
+
+use std::cell::Cell;
+use std::sync::{Arc, OnceLock};
+
+use crate::visitors::{Descend, for_each_expr_without_closures};
+use crate::{get_unique_builtin_attr, sym};
 
 use arrayvec::ArrayVec;
 use rustc_ast::{FormatArgs, FormatArgument, FormatPlaceholder};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_data_structures::sync::{Lrc, OnceLock};
 use rustc_hir::{self as hir, Expr, ExprKind, HirId, Node, QPath};
-use rustc_lint::LateContext;
+use rustc_lint::{LateContext, LintContext as _};
 use rustc_span::def_id::DefId;
 use rustc_span::hygiene::{self, MacroKind, SyntaxContext};
-use rustc_span::{sym, BytePos, ExpnData, ExpnId, ExpnKind, Span, SpanData, Symbol};
+use rustc_span::{BytePos, ExpnData, ExpnId, ExpnKind, Span, SpanData, Symbol};
 use std::ops::ControlFlow;
 
 const FORMAT_MACRO_DIAG_ITEMS: &[Symbol] = &[
     sym::assert_eq_macro,
     sym::assert_macro,
     sym::assert_ne_macro,
+    sym::core_panic_macro,
     sym::debug_assert_eq_macro,
     sym::debug_assert_macro,
     sym::debug_assert_ne_macro,
@@ -27,6 +33,8 @@ const FORMAT_MACRO_DIAG_ITEMS: &[Symbol] = &[
     sym::print_macro,
     sym::println_macro,
     sym::std_panic_macro,
+    sym::todo_macro,
+    sym::unimplemented_macro,
     sym::write_macro,
     sym::writeln_macro,
 ];
@@ -36,7 +44,15 @@ pub fn is_format_macro(cx: &LateContext<'_>, macro_def_id: DefId) -> bool {
     if let Some(name) = cx.tcx.get_diagnostic_name(macro_def_id) {
         FORMAT_MACRO_DIAG_ITEMS.contains(&name)
     } else {
-        false
+        // Allow users to tag any macro as being format!-like
+        // TODO: consider deleting FORMAT_MACRO_DIAG_ITEMS and using just this method
+        get_unique_builtin_attr(
+            cx.sess(),
+            #[allow(deprecated)]
+            cx.tcx.get_all_attrs(macro_def_id),
+            sym::format_args,
+        )
+        .is_some()
     }
 }
 
@@ -59,6 +75,7 @@ pub struct MacroCall {
 }
 
 impl MacroCall {
+    /// Returns true if this macro call is from the root expansion or a locally defined macro
     pub fn is_local(&self) -> bool {
         span_is_local(self.span)
     }
@@ -93,7 +110,7 @@ pub fn expn_is_local(expn: ExpnId) -> bool {
     std::iter::once((expn, data))
         .chain(backtrace)
         .find_map(|(_, data)| data.macro_def_id)
-        .map_or(true, DefId::is_local)
+        .is_none_or(DefId::is_local)
 }
 
 /// Returns an iterator of macro expansions that created the given span.
@@ -150,10 +167,11 @@ pub fn first_node_macro_backtrace(cx: &LateContext<'_>, node: &impl HirNode) -> 
 }
 
 /// If `node` is the "first node" in a macro expansion, returns `Some` with the `ExpnId` of the
-/// macro call site (i.e. the parent of the macro expansion). This generally means that `node`
-/// is the outermost node of an entire macro expansion, but there are some caveats noted below.
-/// This is useful for finding macro calls while visiting the HIR without processing the macro call
-/// at every node within its expansion.
+/// macro call site (i.e. the parent of the macro expansion).
+///
+/// This generally means that `node` is the outermost node of an entire macro expansion, but there
+/// are some caveats noted below. This is useful for finding macro calls while visiting the HIR
+/// without processing the macro call at every node within its expansion.
 ///
 /// If you already have immediate access to the parent node, it is simpler to
 /// just check the context of that span directly (e.g. `parent.span.from_expansion()`).
@@ -165,14 +183,40 @@ pub fn first_node_macro_backtrace(cx: &LateContext<'_>, node: &impl HirNode) -> 
 /// A node may be the "first node" of multiple macro calls in a macro backtrace.
 /// The expansion of the outermost macro call site is returned in such cases.
 pub fn first_node_in_macro(cx: &LateContext<'_>, node: &impl HirNode) -> Option<ExpnId> {
+    // A node that is not from an expansion can never be the first node in a macro. This is the
+    // common case, so return before touching the cache.
+    if !node.span().from_expansion() {
+        return None;
+    }
+
+    // The macro lints each query this for the node currently being visited, and the combined late
+    // pass runs all their `check_*` callbacks on that node back to back, so the redundant queries
+    // are consecutive. A single-slot memo of the last node collapses them to one backtrace walk in
+    // O(1) memory. The result is a pure function of the `HirId` (the HIR is frozen during lint
+    // passes), so returning the stored value on a key match is always correct.
+    let hir_id = node.hir_id();
+    if let Some((cached_id, cached)) = LAST_FIRST_NODE_IN_MACRO.get()
+        && cached_id == hir_id
+    {
+        return cached;
+    }
+    let result = first_node_in_macro_uncached(cx, node);
+    LAST_FIRST_NODE_IN_MACRO.set(Some((hir_id, result)));
+    result
+}
+
+thread_local! {
+    static LAST_FIRST_NODE_IN_MACRO: Cell<Option<(HirId, Option<ExpnId>)>> = const { Cell::new(None) };
+}
+
+fn first_node_in_macro_uncached(cx: &LateContext<'_>, node: &impl HirNode) -> Option<ExpnId> {
     // get the macro expansion or return `None` if not found
     // `macro_backtrace` importantly ignores desugaring expansions
     let expn = macro_backtrace(node.span()).next()?.expn;
 
     // get the parent node, possibly skipping over a statement
     // if the parent is not found, it is sensible to return `Some(root)`
-    let hir = cx.tcx.hir();
-    let mut parent_iter = hir.parent_iter(node.hir_id());
+    let mut parent_iter = cx.tcx.hir_parent_iter(node.hir_id());
     let (parent_id, _) = match parent_iter.next() {
         None => return Some(ExpnId::root()),
         Some((_, Node::Stmt(_))) => match parent_iter.next() {
@@ -183,7 +227,7 @@ pub fn first_node_in_macro(cx: &LateContext<'_>, node: &impl HirNode) -> Option<
     };
 
     // get the macro expansion of the parent node
-    let parent_span = hir.span(parent_id);
+    let parent_span = cx.tcx.hir_span(parent_id);
     let Some(parent_macro_call) = macro_backtrace(parent_span).next() else {
         // the parent node is not in a macro
         return Some(ExpnId::root());
@@ -222,19 +266,30 @@ pub fn is_assert_macro(cx: &LateContext<'_>, def_id: DefId) -> bool {
     matches!(name, sym::assert_macro | sym::debug_assert_macro)
 }
 
+/// A call to a function in [`std::rt`] or [`core::panicking`] that results in a panic, typically
+/// part of a `panic!()` expansion (often wrapped in a block) but may be called directly by other
+/// macros such as `assert`.
 #[derive(Debug)]
-pub enum PanicExpn<'a> {
-    /// No arguments - `panic!()`
-    Empty,
-    /// A string literal or any `&str` - `panic!("message")` or `panic!(message)`
-    Str(&'a Expr<'a>),
-    /// A single argument that implements `Display` - `panic!("{}", object)`
+pub enum PanicCall<'a> {
+    // The default message - `panic!()`, `assert!(true)`, etc.
+    DefaultMessage,
+    /// A string literal or any `&str` in edition 2015/2018 - `panic!("message")` or
+    /// `panic!(message)`.
+    ///
+    /// In edition 2021+ `panic!("message")` will be a [`PanicCall::Format`] and `panic!(message)` a
+    /// compile error.
+    Str2015(&'a Expr<'a>),
+    /// A single argument that implements `Display` - `panic!("{}", object)`.
+    ///
+    /// `panic!("{object}")` will still be a [`PanicCall::Format`].
     Display(&'a Expr<'a>),
-    /// Anything else - `panic!("error {}: {}", a, b)`
+    /// Anything else - `panic!("error {}: {}", a, b)`, `panic!("on edition 2021+")`.
+    ///
+    /// See [`FormatArgsStorage::get`] to examine the contents of the formatting.
     Format(&'a Expr<'a>),
 }
 
-impl<'a> PanicExpn<'a> {
+impl<'a> PanicCall<'a> {
     pub fn parse(expr: &'a Expr<'a>) -> Option<Self> {
         let ExprKind::Call(callee, args) = &expr.kind else {
             return None;
@@ -242,29 +297,29 @@ impl<'a> PanicExpn<'a> {
         let ExprKind::Path(QPath::Resolved(_, path)) = &callee.kind else {
             return None;
         };
-        let name = path.segments.last().unwrap().ident.as_str();
-
-        // This has no argument
-        if name == "panic_cold_explicit" {
-            return Some(Self::Empty);
-        };
+        let name = path.segments.last().unwrap().ident.name;
 
         let [arg, rest @ ..] = args else {
             return None;
         };
         let result = match name {
-            "panic" if arg.span.eq_ctxt(expr.span) => Self::Empty,
-            "panic" | "panic_str" => Self::Str(arg),
-            "panic_display" | "panic_cold_display" => {
+            sym::panic | sym::begin_panic | sym::panic_str_2015 => {
+                if arg.span.eq_ctxt(expr.span) || arg.span.is_dummy() {
+                    Self::DefaultMessage
+                } else {
+                    Self::Str2015(arg)
+                }
+            },
+            sym::panic_display => {
                 let ExprKind::AddrOf(_, _, e) = &arg.kind else {
                     return None;
                 };
                 Self::Display(e)
             },
-            "panic_fmt" => Self::Format(arg),
+            sym::panic_fmt => Self::Format(arg),
             // Since Rust 1.52, `assert_{eq,ne}` macros expand to use:
             // `core::panicking::assert_failed(.., left_val, right_val, None | Some(format_args!(..)));`
-            "assert_failed" => {
+            sym::assert_failed => {
                 // It should have 4 arguments in total (we already matched with the first argument,
                 // so we're just checking for 3)
                 if rest.len() != 3 {
@@ -274,12 +329,16 @@ impl<'a> PanicExpn<'a> {
                 let msg_arg = &rest[2];
                 match msg_arg.kind {
                     ExprKind::Call(_, [fmt_arg]) => Self::Format(fmt_arg),
-                    _ => Self::Empty,
+                    _ => Self::DefaultMessage,
                 }
             },
             _ => return None,
         };
         Some(result)
+    }
+
+    pub fn is_default_message(&self) -> bool {
+        matches!(self, Self::DefaultMessage)
     }
 }
 
@@ -288,18 +347,8 @@ pub fn find_assert_args<'a>(
     cx: &LateContext<'_>,
     expr: &'a Expr<'a>,
     expn: ExpnId,
-) -> Option<(&'a Expr<'a>, PanicExpn<'a>)> {
-    find_assert_args_inner(cx, expr, expn).map(|([e], mut p)| {
-        // `assert!(..)` expands to `core::panicking::panic("assertion failed: ...")` (which we map to
-        // `PanicExpn::Str(..)`) and `assert!(.., "..")` expands to
-        // `core::panicking::panic_fmt(format_args!(".."))` (which we map to `PanicExpn::Format(..)`).
-        // So even we got `PanicExpn::Str(..)` that means there is no custom message provided
-        if let PanicExpn::Str(_) = p {
-            p = PanicExpn::Empty;
-        }
-
-        (e, p)
-    })
+) -> Option<(&'a Expr<'a>, PanicCall<'a>)> {
+    find_assert_args_inner(cx, expr, expn).map(|([e], p)| (e, p))
 }
 
 /// Finds the arguments of an `assert_eq!` or `debug_assert_eq!` macro call within the macro
@@ -308,7 +357,7 @@ pub fn find_assert_eq_args<'a>(
     cx: &LateContext<'_>,
     expr: &'a Expr<'a>,
     expn: ExpnId,
-) -> Option<(&'a Expr<'a>, &'a Expr<'a>, PanicExpn<'a>)> {
+) -> Option<(&'a Expr<'a>, &'a Expr<'a>, PanicCall<'a>)> {
     find_assert_args_inner(cx, expr, expn).map(|([a, b], p)| (a, b, p))
 }
 
@@ -316,7 +365,7 @@ fn find_assert_args_inner<'a, const N: usize>(
     cx: &LateContext<'_>,
     expr: &'a Expr<'a>,
     expn: ExpnId,
-) -> Option<([&'a Expr<'a>; N], PanicExpn<'a>)> {
+) -> Option<([&'a Expr<'a>; N], PanicCall<'a>)> {
     let macro_id = expn.expn_data().macro_def_id?;
     let (expr, expn) = match cx.tcx.item_name(macro_id).as_str().strip_prefix("debug_") {
         None => (expr, expn),
@@ -325,7 +374,7 @@ fn find_assert_args_inner<'a, const N: usize>(
     let mut args = ArrayVec::new();
     let panic_expn = for_each_expr_without_closures(expr, |e| {
         if args.is_full() {
-            match PanicExpn::parse(e) {
+            match PanicCall::parse(e) {
                 Some(expn) => ControlFlow::Break(expn),
                 None => ControlFlow::Continue(Descend::Yes),
             }
@@ -337,10 +386,7 @@ fn find_assert_args_inner<'a, const N: usize>(
         }
     });
     let args = args.into_inner().ok()?;
-    // if no `panic!(..)` is found, use `PanicExpn::Empty`
-    // to indicate that the default assertion message is used
-    let panic_expn = panic_expn.unwrap_or(PanicExpn::Empty);
-    Some((args, panic_expn))
+    Some((args, panic_expn?))
 }
 
 fn find_assert_within_debug_assert<'a>(
@@ -389,7 +435,7 @@ fn is_assert_arg(cx: &LateContext<'_>, expr: &Expr<'_>, assert_expn: ExpnId) -> 
 /// Stores AST [`FormatArgs`] nodes for use in late lint passes, as they are in a desugared form in
 /// the HIR
 #[derive(Default, Clone)]
-pub struct FormatArgsStorage(Lrc<OnceLock<FxHashMap<Span, FormatArgs>>>);
+pub struct FormatArgsStorage(Arc<OnceLock<FxHashMap<Span, FormatArgs>>>);
 
 impl FormatArgsStorage {
     /// Returns an AST [`FormatArgs`] node if a `format_args` expansion is found as a descendant of
@@ -418,6 +464,24 @@ impl FormatArgsStorage {
         self.0.get()?.get(&format_args_expr.span.with_parent(None))
     }
 
+    /// Returns AST [`FormatArgs`] nodes if there are any nested inside `parent_format_args`.
+    pub fn get_nested(&self, parent_format_args: &FormatArgs) -> Vec<&FormatArgs> {
+        let mut nested = Vec::new();
+        let Some(format_args_map) = self.0.get() else {
+            return nested;
+        };
+
+        for arg in parent_format_args.arguments.all_args() {
+            if matches!(arg.expr.kind, rustc_ast::ExprKind::FormatArgs(_))
+                && let Some(format_args) = format_args_map.get(&arg.expr.span.with_parent(None))
+            {
+                nested.push(format_args);
+            }
+        }
+
+        nested
+    }
+
     /// Should only be called by `FormatArgsCollector`
     pub fn set(&self, format_args: FxHashMap<Span, FormatArgs>) {
         self.0
@@ -426,12 +490,8 @@ impl FormatArgsStorage {
     }
 }
 
-/// Attempt to find the [`rustc_hir::Expr`] that corresponds to the [`FormatArgument`]'s value, if
-/// it cannot be found it will return the [`rustc_ast::Expr`].
-pub fn find_format_arg_expr<'hir, 'ast>(
-    start: &'hir Expr<'hir>,
-    target: &'ast FormatArgument,
-) -> Result<&'hir Expr<'hir>, &'ast rustc_ast::Expr> {
+/// Attempt to find the [`rustc_hir::Expr`] that corresponds to the [`FormatArgument`]'s value
+pub fn find_format_arg_expr<'hir>(start: &'hir Expr<'hir>, target: &FormatArgument) -> Option<&'hir Expr<'hir>> {
     let SpanData {
         lo,
         hi,
@@ -449,7 +509,6 @@ pub fn find_format_arg_expr<'hir, 'ast>(
             ControlFlow::Continue(())
         }
     })
-    .ok_or(&target.expr)
 }
 
 /// Span of the `:` and format specifiers
@@ -520,7 +579,9 @@ pub enum FormatParamUsage {
 
 /// A node with a `HirId` and a `Span`
 pub trait HirNode {
+    /// Returns this node's [`HirId`]
     fn hir_id(&self) -> HirId;
+    /// Returns this node's [`Span`]
     fn span(&self) -> Span;
 }
 

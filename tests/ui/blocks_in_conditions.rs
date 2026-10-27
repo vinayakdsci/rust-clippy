@@ -1,13 +1,7 @@
 //@aux-build:proc_macro_attr.rs
 
 #![warn(clippy::blocks_in_conditions)]
-#![allow(
-    unused,
-    clippy::let_and_return,
-    clippy::needless_if,
-    clippy::missing_transmute_annotations
-)]
-#![warn(clippy::nonminimal_bool)]
+#![expect(unnecessary_transmutes, clippy::missing_transmute_annotations, clippy::needless_ifs)]
 
 macro_rules! blocky {
     () => {{ true }};
@@ -70,28 +64,6 @@ fn block_in_assert() {
     );
 }
 
-// issue #11814
-fn block_in_match_expr(num: i32) -> i32 {
-    match {
-        //~^ ERROR: in a `match` scrutinee, avoid complex blocks or closures with blocks; instead, move the block or closure higher and bind it with a `let`
-        let opt = Some(2);
-        opt
-    } {
-        Some(0) => 1,
-        Some(n) => num * 2,
-        None => 0,
-    };
-
-    match unsafe {
-        let hearty_hearty_hearty = vec![240, 159, 146, 150];
-        String::from_utf8_unchecked(hearty_hearty_hearty).as_str()
-    } {
-        "💖" => 1,
-        "what" => 2,
-        _ => 3,
-    }
-}
-
 // issue #12162
 macro_rules! timed {
     ($name:expr, $body:expr $(,)?) => {{
@@ -117,6 +89,13 @@ mod issue_12016 {
     }
 }
 
+fn issue_9911() {
+    if { return } {}
+
+    let a = 1;
+    if { if a == 1 { return } else { true } } {}
+}
+
 fn in_closure() {
     let v = vec![1, 2, 3];
     if v.into_iter()
@@ -127,6 +106,68 @@ fn in_closure() {
         .any(|x| x == 5)
     {
         println!("contains 4!");
+    }
+}
+
+fn issue_15112() {
+    {
+        let v = std::sync::Mutex::new(0);
+        match { *v.lock().unwrap() } {
+            1 => {
+                todo!()
+            },
+            2 => {
+                todo!()
+            },
+            _ => {},
+        }
+    }
+
+    {
+        // No Drop impl, so braces should be removed
+        struct Foo;
+
+        impl Foo {
+            fn foo(&self) -> i32 {
+                0
+            }
+        }
+
+        match { Foo.foo() } {
+            //~^ ERROR: omit braces around single expression condition
+            1 => {
+                todo!()
+            },
+            2 => {
+                todo!()
+            },
+            _ => {},
+        }
+    }
+
+    {
+        // Drop impl, so braces should be kept
+        struct Bar;
+
+        impl Drop for Bar {
+            fn drop(&mut self) {}
+        }
+
+        impl Bar {
+            fn bar(&self) -> i32 {
+                0
+            }
+        }
+
+        match { Bar.bar() } {
+            1 => {
+                todo!()
+            },
+            2 => {
+                todo!()
+            },
+            _ => {},
+        }
     }
 }
 

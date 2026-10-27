@@ -1,10 +1,5 @@
 #![warn(clippy::unit_cmp)]
-#![allow(
-    clippy::no_effect,
-    clippy::unnecessary_operation,
-    clippy::derive_partial_eq_without_eq,
-    clippy::needless_if
-)]
+#![expect(clippy::needless_ifs, clippy::no_effect)]
 
 #[derive(PartialEq)]
 pub struct ContainsUnit(()); // should be fine
@@ -15,22 +10,23 @@ fn main() {
 
     // this warns
     if {
-        //~^ ERROR: ==-comparison of unit values detected. This will always be true
-        //~| NOTE: `-D clippy::unit-cmp` implied by `-D warnings`
+        //~^ unit_cmp
+
         true;
     } == {
         false;
     } {}
 
     if {
-        //~^ ERROR: >-comparison of unit values detected. This will always be false
+        //~^ unit_cmp
+
         true;
     } > {
         false;
     } {}
 
     assert_eq!(
-        //~^ ERROR: `assert_eq` of unit values detected. This will always succeed
+        //~^ unit_cmp
         {
             true;
         },
@@ -39,7 +35,7 @@ fn main() {
         }
     );
     debug_assert_eq!(
-        //~^ ERROR: `debug_assert_eq` of unit values detected. This will always succeed
+        //~^ unit_cmp
         {
             true;
         },
@@ -49,7 +45,7 @@ fn main() {
     );
 
     assert_ne!(
-        //~^ ERROR: `assert_ne` of unit values detected. This will always fail
+        //~^ unit_cmp
         {
             true;
         },
@@ -58,7 +54,7 @@ fn main() {
         }
     );
     debug_assert_ne!(
-        //~^ ERROR: `debug_assert_ne` of unit values detected. This will always fail
+        //~^ unit_cmp
         {
             true;
         },
@@ -66,4 +62,21 @@ fn main() {
             false;
         }
     );
+}
+
+fn issue15559() {
+    fn foo() {}
+    assert_eq!(
+        //~^ unit_cmp
+        {
+            1;
+        },
+        foo()
+    );
+    assert_eq!(foo(), foo());
+    //~^ unit_cmp
+
+    // don't lint on explicitly written unit expr
+    assert_eq!(foo(), ());
+    assert_ne!((), ContainsUnit(()).0);
 }

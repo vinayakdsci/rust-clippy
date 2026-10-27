@@ -1,7 +1,9 @@
-#![allow(clippy::assertions_on_constants, clippy::eq_op, clippy::let_unit_value)]
-#![warn(clippy::unimplemented, clippy::unreachable, clippy::todo, clippy::panic)]
+//@ aux-build:proc_macros.rs
+#![warn(clippy::panic, clippy::todo, clippy::unimplemented, clippy::unreachable)]
+#![expect(clippy::assertions_on_constants, clippy::eq_op, clippy::let_unit_value)]
 
 extern crate core;
+extern crate proc_macros;
 
 const _: () = {
     if 1 == 0 {
@@ -20,61 +22,86 @@ fn inline_const() {
 fn panic() {
     let a = 2;
     panic!();
-    //~^ ERROR: `panic` should not be present in production code
-    //~| NOTE: `-D clippy::panic` implied by `-D warnings`
+    //~^ panic
+
     panic!("message");
-    //~^ ERROR: `panic` should not be present in production code
+    //~^ panic
+
     panic!("{} {}", "panic with", "multiple arguments");
-    //~^ ERROR: `panic` should not be present in production code
+    //~^ panic
+
+    let b = a + 2;
+}
+
+const fn panic_const() {
+    let a = 2;
+    panic!();
+    //~^ panic
+
+    panic!("message");
+    //~^ panic
+
+    panic!("{} {}", "panic with", "multiple arguments");
+    //~^ panic
+
     let b = a + 2;
 }
 
 fn todo() {
     let a = 2;
     todo!();
-    //~^ ERROR: `todo` should not be present in production code
-    //~| NOTE: `-D clippy::todo` implied by `-D warnings`
+    //~^ todo
+
     todo!("message");
-    //~^ ERROR: `todo` should not be present in production code
+    //~^ todo
+
     todo!("{} {}", "panic with", "multiple arguments");
-    //~^ ERROR: `todo` should not be present in production code
+    //~^ todo
+
     let b = a + 2;
 }
 
 fn unimplemented() {
     let a = 2;
     unimplemented!();
-    //~^ ERROR: `unimplemented` should not be present in production code
-    //~| NOTE: `-D clippy::unimplemented` implied by `-D warnings`
+    //~^ unimplemented
+
     unimplemented!("message");
-    //~^ ERROR: `unimplemented` should not be present in production code
+    //~^ unimplemented
+
     unimplemented!("{} {}", "panic with", "multiple arguments");
-    //~^ ERROR: `unimplemented` should not be present in production code
+    //~^ unimplemented
+
     let b = a + 2;
 }
 
 fn unreachable() {
     let a = 2;
     unreachable!();
-    //~^ ERROR: usage of the `unreachable!` macro
-    //~| NOTE: `-D clippy::unreachable` implied by `-D warnings`
+    //~^ unreachable
+
     unreachable!("message");
-    //~^ ERROR: usage of the `unreachable!` macro
+    //~^ unreachable
+
     unreachable!("{} {}", "panic with", "multiple arguments");
-    //~^ ERROR: usage of the `unreachable!` macro
+    //~^ unreachable
+
     let b = a + 2;
 }
 
 fn core_versions() {
     use core::{panic, todo, unimplemented, unreachable};
     panic!();
-    //~^ ERROR: `panic` should not be present in production code
+    //~^ panic
+
     todo!();
-    //~^ ERROR: `todo` should not be present in production code
+    //~^ todo
+
     unimplemented!();
-    //~^ ERROR: `unimplemented` should not be present in production code
+    //~^ unimplemented
+
     unreachable!();
-    //~^ ERROR: usage of the `unreachable!` macro
+    //~^ unreachable
 }
 
 fn assert() {
@@ -101,14 +128,49 @@ fn debug_assert_msg() {
     debug_assert_ne!(true, false, "test");
 }
 
-fn main() {
-    panic();
-    todo();
-    unimplemented();
-    unreachable();
-    core_versions();
-    assert();
-    assert_msg();
-    debug_assert();
-    debug_assert_msg();
+fn main() {}
+
+mod issue17699 {
+    macro_rules! outer {
+        ($e:expr) => {{ $e }};
+    }
+
+    fn nested_macro() {
+        outer!(panic!()); //~ panic
+        outer!(todo!()); //~ todo
+        outer!(unimplemented!()); //~ unimplemented
+        outer!(unreachable!()); //~ unreachable
+
+        macro_rules! call_panic {
+            () => {
+                panic!("should not be linted")
+            };
+        }
+        call_panic!();
+    }
+
+    fn duplication() {
+        macro_rules! twice {
+            ($e:expr) => {{ ($e, $e) }};
+        };
+        // `panic!` is called twice but linted once
+        twice!(panic!()); //~ panic
+    }
+
+    fn proc_macro() {
+        // These should not linted because users have no control
+
+        proc_macros::external! { panic!() }
+
+        proc_macros::with_span! { span {
+            panic!();
+            todo!();
+            unimplemented!();
+            unreachable!()
+        }}
+        proc_macros::with_span! {
+            span proc_macros::with_span! { span panic!("FP") }
+        }
+        outer! { proc_macros::with_span! { span panic!("FP") } }
+    }
 }

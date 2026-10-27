@@ -1,5 +1,5 @@
 //@aux-build:proc_macros.rs
-#![allow(unused)]
+//@aux-build:proc_macro_derive.rs
 #![warn(clippy::allow_attributes)]
 #![no_main]
 
@@ -10,6 +10,7 @@ use proc_macros::{external, with_span};
 
 // Should lint
 #[allow(dead_code)]
+//~^ allow_attributes
 struct T1;
 
 struct T2; // Should not lint
@@ -19,6 +20,7 @@ struct T3;
 struct T4;
 // `panic = "unwind"` should always be true
 #[cfg_attr(panic = "unwind", allow(dead_code))]
+//~^ allow_attributes
 struct CfgT;
 
 #[allow(clippy::allow_attributes, unused)]
@@ -50,6 +52,7 @@ fn ignore_inner_attr() {
 #[clippy::msrv = "1.81"]
 fn msrv_1_81() {
     #[allow(unused)]
+    //~^ allow_attributes
     let x = 1;
 }
 
@@ -57,4 +60,41 @@ fn msrv_1_81() {
 fn msrv_1_80() {
     #[allow(unused)]
     let x = 1;
+}
+
+#[rustfmt::skip]
+#[ allow ( dead_code ) ]
+//~^ allow_attributes
+struct Spaced;
+
+#[deny(clippy::allow_attributes)]
+fn deny_allow_attributes() -> Option<u8> {
+    let allow = None;
+    allow?;
+    Some(42)
+}
+
+// Edge case where the generated tokens spans match on #[repr(transparent)] which tricks the proc
+// macro check
+#[repr(transparent)]
+#[derive(proc_macro_derive::AllowLintSameSpan)] // This macro generates tokens with the same span as the whole struct and repr
+struct IgnoreDerived;
+
+mod issue17562 {
+    macro_rules! allow_inside {
+        () => {
+            #[allow(dead_code)]
+            fn inside_macro() {}
+        };
+    }
+    allow_inside!();
+
+    macro_rules! forward {
+        ($($tt:tt)*) => { $($tt)*};
+    }
+    forward! {
+        #[allow(dead_code)]
+        //~^ allow_attributes
+        fn at_call_site() {}
+    }
 }

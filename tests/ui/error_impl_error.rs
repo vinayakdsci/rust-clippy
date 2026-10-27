@@ -1,11 +1,10 @@
-#![allow(unused)]
 #![warn(clippy::error_impl_error)]
 #![no_main]
 
 pub mod a {
     #[derive(Debug)]
     pub struct Error;
-    //~^ ERROR: exported type named `Error` that implements `Error`
+    //~^ error_impl_error
 
     impl std::fmt::Display for Error {
         fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -19,7 +18,7 @@ pub mod a {
 mod b {
     #[derive(Debug)]
     pub(super) enum Error {}
-    //~^ ERROR: exported type named `Error` that implements `Error`
+    //~^ error_impl_error
 
     impl std::fmt::Display for Error {
         fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,7 +31,7 @@ mod b {
 
 pub mod c {
     pub union Error {
-        //~^ ERROR: exported type named `Error` that implements `Error`
+        //~^ error_impl_error
         a: u32,
         b: u32,
     }
@@ -54,7 +53,7 @@ pub mod c {
 
 pub mod d {
     pub type Error = std::fmt::Error;
-    //~^ ERROR: exported type alias named `Error` that implements `Error`
+    //~^ error_impl_error
 }
 
 mod e {

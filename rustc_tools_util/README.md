@@ -13,10 +13,10 @@ build = "build.rs"
 List rustc_tools_util as regular AND build dependency.
 ````toml
 [dependencies]
-rustc_tools_util = "0.3.0"
+rustc_tools_util = "0.4.2"
 
 [build-dependencies]
-rustc_tools_util = "0.3.0"
+rustc_tools_util = "0.4.2"
 ````
 
 In `build.rs`, generate the data in your `main()`
@@ -45,13 +45,13 @@ This project is part of the rust-lang/rust-clippy repository. The source code
 can be found under `./rustc_tools_util/`.
 
 The changelog for `rustc_tools_util` is available under:
-[`rustc_tools_util/CHANGELOG.md`](https://github.com/rust-lang/rust-clippy/blob/master/rustc_tools_util/CHANGELOG.md)
+[`rustc_tools_util/CHANGELOG.md`](https://github.com/rust-lang/rust-clippy/blob/HEAD/rustc_tools_util/CHANGELOG.md)
 
 ## License
 
 <!-- REUSE-IgnoreStart -->
 
-Copyright 2014-2024 The Rust Project Developers
+Copyright (c) The Rust Project Contributors
 
 Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 http://www.apache.org/licenses/LICENSE-2.0> or the MIT license

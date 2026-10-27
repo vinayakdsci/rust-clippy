@@ -3,10 +3,9 @@ use rustc_ast::ast::{AttrKind, Attribute, Item, ItemKind};
 use rustc_ast::token::{Token, TokenKind};
 use rustc_ast::tokenstream::{TokenStream, TokenTree};
 use rustc_errors::Applicability;
-use rustc_lint::{EarlyContext, EarlyLintPass};
-use rustc_session::declare_lint_pass;
+use rustc_lint::{EarlyContext, EarlyLintPass, declare_lint_pass};
 use rustc_span::symbol::sym;
-use rustc_span::Span;
+use rustc_span::{Span, kw};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -15,7 +14,7 @@ declare_clippy_lint! {
     /// ### Why is this bad?
     /// `crate` refers to the macro call's crate, whereas `$crate` refers to the macro definition's
     /// crate. Rarely is the former intended. See:
-    /// https://doc.rust-lang.org/reference/macros-by-example.html#hygiene
+    /// <https://doc.rust-lang.org/reference/macros-by-example.html#hygiene>
     ///
     /// ### Example
     /// ```no_run
@@ -49,14 +48,14 @@ declare_clippy_lint! {
     suspicious,
     "using `crate` in a macro definition"
 }
+
 declare_lint_pass!(CrateInMacroDef => [CRATE_IN_MACRO_DEF]);
 
 impl EarlyLintPass for CrateInMacroDef {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &Item) {
-        if item.attrs.iter().any(is_macro_export)
-            && let ItemKind::MacroDef(macro_def) = &item.kind
-            && let tts = macro_def.body.tokens.clone()
-            && let Some(span) = contains_unhygienic_crate_reference(&tts)
+        if let ItemKind::MacroDef(_, macro_def) = &item.kind
+            && item.attrs.iter().any(is_macro_export)
+            && let Some(span) = contains_unhygienic_crate_reference(&macro_def.body.tokens)
         {
             span_lint_and_sugg(
                 cx,
@@ -83,11 +82,11 @@ fn is_macro_export(attr: &Attribute) -> bool {
 
 fn contains_unhygienic_crate_reference(tts: &TokenStream) -> Option<Span> {
     let mut prev_is_dollar = false;
-    let mut cursor = tts.trees();
-    while let Some(curr) = cursor.next() {
+    let mut iter = tts.iter();
+    while let Some(curr) = iter.next() {
         if !prev_is_dollar
             && let Some(span) = is_crate_keyword(curr)
-            && let Some(next) = cursor.look_ahead(0)
+            && let Some(next) = iter.peek()
             && is_token(next, &TokenKind::PathSep)
         {
             return Some(span);
@@ -106,12 +105,11 @@ fn contains_unhygienic_crate_reference(tts: &TokenStream) -> Option<Span> {
 fn is_crate_keyword(tt: &TokenTree) -> Option<Span> {
     if let TokenTree::Token(
         Token {
-            kind: TokenKind::Ident(symbol, _),
+            kind: TokenKind::Ident(kw::Crate, _),
             span,
         },
         _,
     ) = tt
-        && symbol.as_str() == "crate"
     {
         Some(*span)
     } else {

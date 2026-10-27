@@ -1,65 +1,32 @@
-//! Lints concerned with the grouping of digits with underscores in integral or
-//! floating-point literal expressions.
-
-use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_config::Conf;
+use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::numeric_literal::{NumericLiteral, Radix};
-use clippy_utils::source::snippet_opt;
+use clippy_utils::source::SpanExt as _;
 use rustc_ast::ast::{Expr, ExprKind, LitKind};
 use rustc_ast::token;
 use rustc_errors::Applicability;
-use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
-use rustc_middle::lint::in_external_macro;
-use rustc_session::impl_lint_pass;
+use rustc_lint::{EarlyContext, EarlyLintPass, Lint, LintContext as _, impl_lint_pass};
 use rustc_span::Span;
 use std::iter;
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Warns if a long integral or floating-point constant does
-    /// not contain underscores.
+    /// Warns if there is a better representation for a numeric literal.
     ///
-    /// ### Why is this bad?
-    /// Reading long numbers is difficult without separators.
+    /// ### Why restrict this?
+    /// Especially for big powers of 2, a hexadecimal representation is usually more
+    /// readable than a decimal representation.
     ///
     /// ### Example
-    /// ```no_run
-    /// # let _: u64 =
-    /// 61864918973511
-    /// # ;
-    /// ```
-    ///
-    /// Use instead:
-    /// ```no_run
-    /// # let _: u64 =
-    /// 61_864_918_973_511
-    /// # ;
+    /// ```text
+    /// `255` => `0xFF`
+    /// `65_535` => `0xFFFF`
+    /// `4_042_322_160` => `0xF0F0_F0F0`
     /// ```
     #[clippy::version = "pre 1.29.0"]
-    pub UNREADABLE_LITERAL,
-    pedantic,
-    "long literal without underscores"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
-    /// Warns for mistyped suffix in literals
-    ///
-    /// ### Why is this bad?
-    /// This is most probably a typo
-    ///
-    /// ### Known problems
-    /// - Does not match on integers too large to fit in the corresponding unsigned type
-    /// - Does not match on `_127` since that is a valid grouping for decimal and octal numbers
-    ///
-    /// ### Example
-    /// ```ignore
-    /// `2_32` => `2_i32`
-    /// `250_8 => `250_u8`
-    /// ```
-    #[clippy::version = "1.30.0"]
-    pub MISTYPED_LITERAL_SUFFIXES,
-    correctness,
-    "mistyped literal suffix"
+    pub DECIMAL_LITERAL_REPRESENTATION,
+    restriction,
+    "using decimal representation when hexadecimal would be better"
 }
 
 declare_clippy_lint! {
@@ -92,25 +59,6 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Warns if hexadecimal or binary literals are not grouped
-    /// by nibble or byte.
-    ///
-    /// ### Why is this bad?
-    /// Negatively impacts readability.
-    ///
-    /// ### Example
-    /// ```no_run
-    /// let x: u32 = 0xFFF_FFF;
-    /// let y: u8 = 0b01_011_101;
-    /// ```
-    #[clippy::version = "1.49.0"]
-    pub UNUSUAL_BYTE_GROUPINGS,
-    style,
-    "binary or hex literals that aren't grouped by four"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
     /// Warns if the digits of an integral or floating-point
     /// constant are grouped into groups that
     /// are too large.
@@ -130,23 +78,81 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Warns if there is a better representation for a numeric literal.
+    /// Warns for mistyped suffix in literals
     ///
-    /// ### Why restrict this?
-    /// Especially for big powers of 2, a hexadecimal representation is usually more
-    /// readable than a decimal representation.
+    /// ### Why is this bad?
+    /// This is most probably a typo
+    ///
+    /// ### Known problems
+    /// - Does not match on integers too large to fit in the corresponding unsigned type
+    /// - Does not match on `_127` since that is a valid grouping for decimal and octal numbers
     ///
     /// ### Example
-    /// ```text
-    /// `255` => `0xFF`
-    /// `65_535` => `0xFFFF`
-    /// `4_042_322_160` => `0xF0F0_F0F0`
+    /// ```ignore
+    /// `2_32` => `2_i32`
+    /// `250_8 => `250_u8`
+    /// ```
+    #[clippy::version = "1.30.0"]
+    pub MISTYPED_LITERAL_SUFFIXES,
+    correctness,
+    "mistyped literal suffix"
+}
+
+declare_clippy_lint! {
+    /// ### What it does
+    /// Warns if a long integral or floating-point constant does
+    /// not contain underscores.
+    ///
+    /// ### Why is this bad?
+    /// Reading long numbers is difficult without separators.
+    ///
+    /// ### Example
+    /// ```no_run
+    /// # let _: u64 =
+    /// 61864918973511
+    /// # ;
+    /// ```
+    ///
+    /// Use instead:
+    /// ```no_run
+    /// # let _: u64 =
+    /// 61_864_918_973_511
+    /// # ;
     /// ```
     #[clippy::version = "pre 1.29.0"]
-    pub DECIMAL_LITERAL_REPRESENTATION,
-    restriction,
-    "using decimal representation when hexadecimal would be better"
+    pub UNREADABLE_LITERAL,
+    pedantic,
+    "long literal without underscores"
 }
+
+declare_clippy_lint! {
+    /// ### What it does
+    /// Warns if hexadecimal or binary literals are not grouped
+    /// by nibble or byte.
+    ///
+    /// ### Why is this bad?
+    /// Negatively impacts readability.
+    ///
+    /// ### Example
+    /// ```no_run
+    /// let x: u32 = 0xFFF_FFF;
+    /// let y: u8 = 0b01_011_101;
+    /// ```
+    #[clippy::version = "1.49.0"]
+    pub UNUSUAL_BYTE_GROUPINGS,
+    style,
+    "binary or hex literals that aren't grouped by four"
+}
+
+impl_lint_pass!(DecimalLiteralRepresentation => [DECIMAL_LITERAL_REPRESENTATION]);
+
+impl_lint_pass!(LiteralDigitGrouping => [
+    INCONSISTENT_DIGIT_GROUPING,
+    LARGE_DIGIT_GROUPS,
+    MISTYPED_LITERAL_SUFFIXES,
+    UNREADABLE_LITERAL,
+    UNUSUAL_BYTE_GROUPINGS,
+]);
 
 enum WarningType {
     UnreadableLiteral,
@@ -158,86 +164,53 @@ enum WarningType {
 }
 
 impl WarningType {
-    fn display(&self, suggested_format: String, cx: &EarlyContext<'_>, span: Span) {
+    fn lint_and_text(&self) -> (&'static Lint, &'static str, &'static str) {
         match self {
-            Self::MistypedLiteralSuffix => span_lint_and_sugg(
-                cx,
+            Self::MistypedLiteralSuffix => (
                 MISTYPED_LITERAL_SUFFIXES,
-                span,
                 "mistyped literal suffix",
                 "did you mean to write",
-                suggested_format,
-                Applicability::MaybeIncorrect,
             ),
-            Self::UnreadableLiteral => span_lint_and_sugg(
-                cx,
-                UNREADABLE_LITERAL,
-                span,
-                "long literal lacking separators",
-                "consider",
-                suggested_format,
-                Applicability::MachineApplicable,
-            ),
-            Self::LargeDigitGroups => span_lint_and_sugg(
-                cx,
-                LARGE_DIGIT_GROUPS,
-                span,
-                "digit groups should be smaller",
-                "consider",
-                suggested_format,
-                Applicability::MachineApplicable,
-            ),
-            Self::InconsistentDigitGrouping => span_lint_and_sugg(
-                cx,
+            Self::UnreadableLiteral => (UNREADABLE_LITERAL, "long literal lacking separators", "consider"),
+            Self::LargeDigitGroups => (LARGE_DIGIT_GROUPS, "digit groups should be smaller", "consider"),
+            Self::InconsistentDigitGrouping => (
                 INCONSISTENT_DIGIT_GROUPING,
-                span,
                 "digits grouped inconsistently by underscores",
                 "consider",
-                suggested_format,
-                Applicability::MachineApplicable,
             ),
-            Self::DecimalRepresentation => span_lint_and_sugg(
-                cx,
+            Self::DecimalRepresentation => (
                 DECIMAL_LITERAL_REPRESENTATION,
-                span,
                 "integer literal has a better hexadecimal representation",
                 "consider",
-                suggested_format,
-                Applicability::MachineApplicable,
             ),
-            Self::UnusualByteGroupings => span_lint_and_sugg(
-                cx,
+            Self::UnusualByteGroupings => (
                 UNUSUAL_BYTE_GROUPINGS,
-                span,
                 "digits of hex, binary or octal literal not in groups of equal size",
                 "consider",
-                suggested_format,
-                Applicability::MachineApplicable,
             ),
-        };
+        }
+    }
+
+    fn display(&self, num_lit: &NumericLiteral<'_>, cx: &EarlyContext<'_>, span: Span) {
+        let (lint, message, try_msg) = self.lint_and_text();
+        #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+        span_lint_and_then(cx, lint, span, message, |diag| {
+            diag.span_suggestion(span, try_msg, num_lit.format(), Applicability::MaybeIncorrect);
+        });
     }
 }
 
-#[derive(Copy, Clone)]
 pub struct LiteralDigitGrouping {
     lint_fraction_readability: bool,
 }
 
-impl_lint_pass!(LiteralDigitGrouping => [
-    UNREADABLE_LITERAL,
-    INCONSISTENT_DIGIT_GROUPING,
-    LARGE_DIGIT_GROUPS,
-    MISTYPED_LITERAL_SUFFIXES,
-    UNUSUAL_BYTE_GROUPINGS,
-]);
-
 impl EarlyLintPass for LiteralDigitGrouping {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &Expr) {
-        if in_external_macro(cx.sess(), expr.span) {
-            return;
-        }
-
-        if let ExprKind::Lit(lit) = expr.kind {
+        // `NumericLiteral::from_lit_kind` only accepts integer and float literals.
+        if let ExprKind::Lit(lit) = expr.kind
+            && matches!(lit.kind, token::LitKind::Integer | token::LitKind::Float)
+            && !expr.span.in_external_macro(cx.sess().source_map())
+        {
             self.check_lit(cx, lit, expr.span);
         }
     }
@@ -247,14 +220,14 @@ impl EarlyLintPass for LiteralDigitGrouping {
 const UUID_GROUP_LENS: [usize; 5] = [8, 4, 4, 4, 12];
 
 impl LiteralDigitGrouping {
-    pub fn new(lint_fraction_readability: bool) -> Self {
+    pub fn new(conf: &'static Conf) -> Self {
         Self {
-            lint_fraction_readability,
+            lint_fraction_readability: conf.unreadable_literal_lint_fractions,
         }
     }
 
-    fn check_lit(self, cx: &EarlyContext<'_>, lit: token::Lit, span: Span) {
-        if let Some(src) = snippet_opt(cx, span)
+    fn check_lit(&self, cx: &EarlyContext<'_>, lit: token::Lit, span: Span) {
+        if let Some(src) = span.get_text(cx)
             && let Ok(lit_kind) = LitKind::from_token_lit(lit)
             && let Some(mut num_lit) = NumericLiteral::from_lit_kind(&src, &lit_kind)
         {
@@ -280,7 +253,7 @@ impl LiteralDigitGrouping {
                     );
                     if !consistent {
                         return Err(WarningType::InconsistentDigitGrouping);
-                    };
+                    }
                 }
 
                 Ok(())
@@ -295,7 +268,7 @@ impl LiteralDigitGrouping {
                     WarningType::DecimalRepresentation | WarningType::MistypedLiteralSuffix => true,
                 };
                 if should_warn {
-                    warning_type.display(num_lit.format(), cx, span);
+                    warning_type.display(&num_lit, cx, span);
                 }
             }
         }
@@ -348,11 +321,14 @@ impl LiteralDigitGrouping {
                 }
             }
             *part = main_part;
-            let mut sugg = num_lit.format();
-            sugg.push('_');
-            sugg.push(missing_char);
-            sugg.push_str(last_group);
-            WarningType::MistypedLiteralSuffix.display(sugg, cx, span);
+            let (lint, message, try_msg) = WarningType::MistypedLiteralSuffix.lint_and_text();
+            span_lint_and_then(cx, lint, span, message, |diag| {
+                let mut sugg = num_lit.format();
+                sugg.push('_');
+                sugg.push(missing_char);
+                sugg.push_str(last_group);
+                diag.span_suggestion(span, try_msg, sugg, Applicability::MaybeIncorrect);
+            });
             false
         } else {
             true
@@ -374,11 +350,7 @@ impl LiteralDigitGrouping {
         }
 
         let group_sizes: Vec<usize> = num_lit.integer.split('_').map(str::len).collect();
-        if UUID_GROUP_LENS.len() == group_sizes.len() {
-            iter::zip(&UUID_GROUP_LENS, &group_sizes).all(|(&a, &b)| a == b)
-        } else {
-            false
-        }
+        UUID_GROUP_LENS.len() == group_sizes.len() && iter::zip(&UUID_GROUP_LENS, &group_sizes).all(|(&a, &b)| a == b)
     }
 
     /// Given the sizes of the digit groups of both integral and fractional
@@ -414,12 +386,11 @@ impl LiteralDigitGrouping {
 
         let first = groups.next().expect("At least one group");
 
-        if radix == Radix::Binary || radix == Radix::Octal || radix == Radix::Hexadecimal {
-            if let Some(second_size) = groups.next() {
-                if !groups.all(|i| i == second_size) || first > second_size {
-                    return Err(WarningType::UnusualByteGroupings);
-                }
-            }
+        if (radix == Radix::Binary || radix == Radix::Octal || radix == Radix::Hexadecimal)
+            && let Some(second_size) = groups.next()
+            && (!groups.all(|i| i == second_size) || first > second_size)
+        {
+            return Err(WarningType::UnusualByteGroupings);
         }
 
         if let Some(second) = groups.next() {
@@ -438,44 +409,41 @@ impl LiteralDigitGrouping {
     }
 }
 
-#[expect(clippy::module_name_repetitions)]
-#[derive(Copy, Clone)]
 pub struct DecimalLiteralRepresentation {
     threshold: u64,
 }
 
-impl_lint_pass!(DecimalLiteralRepresentation => [DECIMAL_LITERAL_REPRESENTATION]);
-
 impl EarlyLintPass for DecimalLiteralRepresentation {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &Expr) {
-        if in_external_macro(cx.sess(), expr.span) {
-            return;
-        }
-
-        if let ExprKind::Lit(lit) = expr.kind {
+        // Only integer tokens can produce `LitKind::Int`.
+        if let ExprKind::Lit(lit) = expr.kind
+            && lit.kind == token::LitKind::Integer
+            && !expr.span.in_external_macro(cx.sess().source_map())
+        {
             self.check_lit(cx, lit, expr.span);
         }
     }
 }
 
 impl DecimalLiteralRepresentation {
-    #[must_use]
-    pub fn new(threshold: u64) -> Self {
-        Self { threshold }
+    pub fn new(conf: &'static Conf) -> Self {
+        Self {
+            threshold: conf.literal_representation_threshold,
+        }
     }
-    fn check_lit(self, cx: &EarlyContext<'_>, lit: token::Lit, span: Span) {
+    fn check_lit(&self, cx: &EarlyContext<'_>, lit: token::Lit, span: Span) {
         // Lint integral literals.
         if let Ok(lit_kind) = LitKind::from_token_lit(lit)
             && let LitKind::Int(val, _) = lit_kind
-            && let Some(src) = snippet_opt(cx, span)
+            && val >= u128::from(self.threshold)
+            && let Some(src) = span.get_text(cx)
             && let Some(num_lit) = NumericLiteral::from_lit_kind(&src, &lit_kind)
             && num_lit.radix == Radix::Decimal
-            && val >= u128::from(self.threshold)
         {
             let hex = format!("{val:#X}");
             let num_lit = NumericLiteral::new(&hex, num_lit.suffix, false);
             let _: Result<(), ()> = Self::do_lint(num_lit.integer).map_err(|warning_type| {
-                warning_type.display(num_lit.format(), cx, span);
+                warning_type.display(&num_lit, cx, span);
             });
         }
     }

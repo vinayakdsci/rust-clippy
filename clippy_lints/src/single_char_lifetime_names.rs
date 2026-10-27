@@ -1,8 +1,6 @@
-use clippy_utils::diagnostics::span_lint_and_help;
+use clippy_utils::diagnostics::span_lint_and_then;
 use rustc_ast::ast::{GenericParam, GenericParamKind};
-use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
-use rustc_middle::lint::in_external_macro;
-use rustc_session::declare_lint_pass;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext as _, declare_lint_pass};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -41,22 +39,22 @@ declare_clippy_lint! {
 declare_lint_pass!(SingleCharLifetimeNames => [SINGLE_CHAR_LIFETIME_NAMES]);
 
 impl EarlyLintPass for SingleCharLifetimeNames {
-    fn check_generic_param(&mut self, ctx: &EarlyContext<'_>, param: &GenericParam) {
-        if in_external_macro(ctx.sess(), param.ident.span) {
-            return;
-        }
-
-        if let GenericParamKind::Lifetime = param.kind {
-            if !param.is_placeholder && param.ident.as_str().len() <= 2 {
-                span_lint_and_help(
-                    ctx,
-                    SINGLE_CHAR_LIFETIME_NAMES,
-                    param.ident.span,
-                    "single-character lifetime names are likely uninformative",
-                    None,
-                    "use a more informative name",
-                );
-            }
+    fn check_generic_param(&mut self, cx: &EarlyContext<'_>, param: &GenericParam) {
+        if let GenericParamKind::Lifetime = param.kind
+            && !param.is_placeholder
+            && param.ident.as_str().len() <= 2
+            && !param.ident.span.in_external_macro(cx.sess().source_map())
+        {
+            #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+            span_lint_and_then(
+                cx,
+                SINGLE_CHAR_LIFETIME_NAMES,
+                param.ident.span,
+                "single-character lifetime names are likely uninformative",
+                |diag| {
+                    diag.help("use a more informative name");
+                },
+            );
         }
     }
 }

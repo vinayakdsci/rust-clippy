@@ -2,12 +2,16 @@
 
 > **Note:** The configuration file is unstable and may be deprecated in the future.
 
-Some lints can be configured in a TOML file named `clippy.toml` or `.clippy.toml`, which is searched for in:
+Some lints can be configured in a TOML file named `clippy.toml` or `.clippy.toml`, which is searched for starting in the
+first defined directory according to the following priority order:
 
 1. The directory specified by the `CLIPPY_CONF_DIR` environment variable, or
 2. The directory specified by the
 [CARGO_MANIFEST_DIR](https://doc.rust-lang.org/cargo/reference/environment-variables.html) environment variable, or
 3. The current directory.
+
+If the chosen directory does not contain a configuration file, Clippy will walk up the directory tree, searching each
+parent directory until it finds one or reaches the filesystem root.
 
 It contains a basic `variable = value` mapping e.g.
 
@@ -18,11 +22,11 @@ disallowed-names = ["toto", "tata", "titi"]
 
 The [table of configurations](./lint_configuration.md)
 contains all config values, their default, and a list of lints they affect.
-Each [configurable lint](https://rust-lang.github.io/rust-clippy/master/index.html#Configuration)
+Each [configurable lint](https://rust-lang.github.io/rust-clippy/main/index.html#Configuration)
 , also contains information about these values.
 
 For configurations that are a list type with default values such as
-[disallowed-names](https://rust-lang.github.io/rust-clippy/master/index.html#disallowed_names),
+[disallowed-names](https://rust-lang.github.io/rust-clippy/main/index.html#disallowed_names),
 you can use the unique value `".."` to extend the default values instead of replacing them.
 
 ```toml
@@ -75,7 +79,7 @@ This also works with lint groups. For example, you can run Clippy with warnings 
 cargo clippy -- -W clippy::pedantic
 ```
 
-If you care only about a certain lints, you can allow all others and then explicitly warn on the lints you are
+If you care only about certain lints, you can allow all others and then explicitly warn on the lints you are
 interested in:
 
 ```terminal
@@ -85,7 +89,7 @@ cargo clippy -- -A clippy::all -W clippy::useless_format -W clippy::...
 #### Lints Section in `Cargo.toml`
 
 Finally, lints can be allowed/denied using [the lints
-section](https://doc.rust-lang.org/nightly/cargo/reference/manifest.html#the-lints-section)) in the `Cargo.toml` file:
+section](https://doc.rust-lang.org/nightly/cargo/reference/manifest.html#the-lints-section) in the `Cargo.toml` file:
 
 To deny `clippy::enum_glob_use`, put the following in the `Cargo.toml`:
 
@@ -119,10 +123,16 @@ fn main() {
 You can also omit the patch version when specifying the MSRV, so `msrv = 1.30`
 is equivalent to `msrv = 1.30.0`.
 
-Note: `custom_inner_attributes` is an unstable feature, so it has to be enabled explicitly.
+> **Note:** Some lints change their behavior depending on the configured MSRV.
+> In some cases, Clippy may suppress a lint entirely to avoid suggesting APIs or
+> syntax unavailable for the configured MSRV.
+> In other cases, Clippy may emit the lint but choose an older compatible suggestion.
+
+> **Note:** `custom_inner_attributes` is an unstable feature, so it has to be
+> enabled explicitly.
 
 Lints that recognize this configuration option can be
-found [here](https://rust-lang.github.io/rust-clippy/master/index.html#msrv)
+found [here](https://rust-lang.github.io/rust-clippy/main/index.html#msrv)
 
 ### Disabling evaluation of certain code
 

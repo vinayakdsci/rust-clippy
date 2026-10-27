@@ -1,6 +1,7 @@
 use super::MUT_RANGE_BOUND;
 use clippy_utils::diagnostics::span_lint_and_note;
-use clippy_utils::{get_enclosing_block, higher, path_to_local};
+use clippy_utils::res::MaybeResPath as _;
+use clippy_utils::{get_enclosing_block, higher};
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_hir::{BindingMode, Expr, ExprKind, HirId, Node, PatKind};
 use rustc_hir_typeck::expr_use_visitor::{Delegate, ExprUseVisitor, PlaceBase, PlaceWithHirId};
@@ -8,13 +9,14 @@ use rustc_lint::LateContext;
 use rustc_middle::mir::FakeReadCause;
 use rustc_middle::ty;
 use rustc_span::Span;
+use std::ops::ControlFlow;
 
 pub(super) fn check(cx: &LateContext<'_>, arg: &Expr<'_>, body: &Expr<'_>) {
     if let Some(higher::Range {
         start: Some(start),
         end: Some(end),
         ..
-    }) = higher::Range::hir(arg)
+    }) = higher::Range::hir(cx, arg)
         && let (mut_id_start, mut_id_end) = (check_for_mutability(cx, start), check_for_mutability(cx, end))
         && (mut_id_start.is_some() || mut_id_end.is_some())
     {
@@ -38,7 +40,7 @@ fn mut_warn_with_span(cx: &LateContext<'_>, span: Option<Span>) {
 }
 
 fn check_for_mutability(cx: &LateContext<'_>, bound: &Expr<'_>) -> Option<HirId> {
-    if let Some(hir_id) = path_to_local(bound)
+    if let Some(hir_id) = bound.res_local_id()
         && let Node::Pat(pat) = cx.tcx.hir_node(hir_id)
         && let PatKind::Binding(BindingMode::MUT, ..) = pat.kind
     {
@@ -78,15 +80,17 @@ struct MutatePairDelegate<'a, 'tcx> {
 impl<'tcx> Delegate<'tcx> for MutatePairDelegate<'_, 'tcx> {
     fn consume(&mut self, _: &PlaceWithHirId<'tcx>, _: HirId) {}
 
+    fn use_cloned(&mut self, _: &PlaceWithHirId<'tcx>, _: HirId) {}
+
     fn borrow(&mut self, cmt: &PlaceWithHirId<'tcx>, diag_expr_id: HirId, bk: ty::BorrowKind) {
-        if bk == ty::BorrowKind::MutBorrow {
-            if let PlaceBase::Local(id) = cmt.place.base {
-                if Some(id) == self.hir_id_low && !BreakAfterExprVisitor::is_found(self.cx, diag_expr_id) {
-                    self.span_low = Some(self.cx.tcx.hir().span(diag_expr_id));
-                }
-                if Some(id) == self.hir_id_high && !BreakAfterExprVisitor::is_found(self.cx, diag_expr_id) {
-                    self.span_high = Some(self.cx.tcx.hir().span(diag_expr_id));
-                }
+        if bk == ty::BorrowKind::Mutable
+            && let PlaceBase::Local(id) = cmt.place.base
+        {
+            if Some(id) == self.hir_id_low && !BreakAfterExprVisitor::is_found(self.cx, diag_expr_id) {
+                self.span_low = Some(self.cx.tcx.hir_span(diag_expr_id));
+            }
+            if Some(id) == self.hir_id_high && !BreakAfterExprVisitor::is_found(self.cx, diag_expr_id) {
+                self.span_high = Some(self.cx.tcx.hir_span(diag_expr_id));
             }
         }
     }
@@ -94,10 +98,10 @@ impl<'tcx> Delegate<'tcx> for MutatePairDelegate<'_, 'tcx> {
     fn mutate(&mut self, cmt: &PlaceWithHirId<'tcx>, diag_expr_id: HirId) {
         if let PlaceBase::Local(id) = cmt.place.base {
             if Some(id) == self.hir_id_low && !BreakAfterExprVisitor::is_found(self.cx, diag_expr_id) {
-                self.span_low = Some(self.cx.tcx.hir().span(diag_expr_id));
+                self.span_low = Some(self.cx.tcx.hir_span(diag_expr_id));
             }
             if Some(id) == self.hir_id_high && !BreakAfterExprVisitor::is_found(self.cx, diag_expr_id) {
-                self.span_high = Some(self.cx.tcx.hir().span(diag_expr_id));
+                self.span_high = Some(self.cx.tcx.hir_span(diag_expr_id));
             }
         }
     }
@@ -114,7 +118,6 @@ impl MutatePairDelegate<'_, '_> {
 struct BreakAfterExprVisitor {
     hir_id: HirId,
     past_expr: bool,
-    past_candidate: bool,
     break_after_expr: bool,
 }
 
@@ -123,33 +126,30 @@ impl BreakAfterExprVisitor {
         let mut visitor = BreakAfterExprVisitor {
             hir_id,
             past_expr: false,
-            past_candidate: false,
             break_after_expr: false,
         };
 
-        get_enclosing_block(cx, hir_id).map_or(false, |block| {
-            visitor.visit_block(block);
+        get_enclosing_block(cx, hir_id).is_some_and(|block| {
+            let _ = visitor.visit_block(block);
             visitor.break_after_expr
         })
     }
 }
 
 impl<'tcx> Visitor<'tcx> for BreakAfterExprVisitor {
-    fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
-        if self.past_candidate {
-            return;
-        }
-
+    type Result = ControlFlow<()>;
+    fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) -> ControlFlow<()> {
         if expr.hir_id == self.hir_id {
             self.past_expr = true;
+            ControlFlow::Continue(())
         } else if self.past_expr {
             if matches!(&expr.kind, ExprKind::Break(..)) {
                 self.break_after_expr = true;
             }
 
-            self.past_candidate = true;
+            ControlFlow::Break(())
         } else {
-            intravisit::walk_expr(self, expr);
+            intravisit::walk_expr(self, expr)
         }
     }
 }

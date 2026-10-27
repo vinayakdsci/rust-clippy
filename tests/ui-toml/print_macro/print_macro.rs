@@ -1,10 +1,11 @@
 //@compile-flags: --test
-#![warn(clippy::print_stdout)]
-#![warn(clippy::print_stderr)]
+#![warn(clippy::print_stderr, clippy::print_stdout)]
 
 fn foo(n: u32) {
     print!("{n}");
+    //~^ print_stdout
     eprint!("{n}");
+    //~^ print_stderr
 }
 
 #[test]

@@ -2,6 +2,7 @@ mod borrowed_box;
 mod box_collection;
 mod linked_list;
 mod option_option;
+mod owned_cow;
 mod rc_buffer;
 mod rc_mutex;
 mod redundant_allocation;
@@ -9,16 +10,42 @@ mod type_complexity;
 mod utils;
 mod vec_box;
 
+use clippy_config::Conf;
 use rustc_hir as hir;
 use rustc_hir::intravisit::FnKind;
 use rustc_hir::{
-    Body, FnDecl, FnRetTy, GenericArg, ImplItem, ImplItemKind, Item, ItemKind, LetStmt, MutTy, QPath, TraitFn,
-    TraitItem, TraitItemKind, TyKind,
+    Body, FnDecl, FnRetTy, GenericArg, ImplItem, ImplItemKind, Item, ItemKind, LetStmt, QPath, TraitFn, TraitItem,
+    TraitItemKind, TyKind,
 };
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::impl_lint_pass;
-use rustc_span::def_id::LocalDefId;
+use rustc_lint::{LateContext, LateLintPass, impl_lint_pass};
 use rustc_span::Span;
+use rustc_span::def_id::LocalDefId;
+
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for usage of `&Box<T>` anywhere in the code.
+    /// Check the [Box documentation](https://doc.rust-lang.org/std/boxed/index.html) for more information.
+    ///
+    /// ### Why is this bad?
+    /// A `&Box<T>` parameter requires the function caller to box `T` first before passing it to a function.
+    /// Using `&T` defines a concrete type for the parameter and generalizes the function, this would also
+    /// auto-deref to `&T` at the function call site if passed a `&Box<T>`.
+    ///
+    /// ### Example
+    /// ```rust,ignore
+    /// fn foo(bar: &Box<T>) { ... }
+    /// ```
+    ///
+    /// Better:
+    ///
+    /// ```rust,ignore
+    /// fn foo(bar: &T) { ... }
+    /// ```
+    #[clippy::version = "pre 1.29.0"]
+    pub BORROWED_BOX,
+    complexity,
+    "a borrow of a boxed type"
+}
 
 declare_clippy_lint! {
     /// ### What it does
@@ -48,78 +75,6 @@ declare_clippy_lint! {
     pub BOX_COLLECTION,
     perf,
     "usage of `Box<Vec<T>>`, vector elements are already on the heap"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
-    /// Checks for usage of `Vec<Box<T>>` where T: Sized anywhere in the code.
-    /// Check the [Box documentation](https://doc.rust-lang.org/std/boxed/index.html) for more information.
-    ///
-    /// ### Why is this bad?
-    /// `Vec` already keeps its contents in a separate area on
-    /// the heap. So if you `Box` its contents, you just add another level of indirection.
-    ///
-    /// ### Known problems
-    /// Vec<Box<T: Sized>> makes sense if T is a large type (see [#3530](https://github.com/rust-lang/rust-clippy/issues/3530),
-    /// 1st comment).
-    ///
-    /// ### Example
-    /// ```no_run
-    /// struct X {
-    ///     values: Vec<Box<i32>>,
-    /// }
-    /// ```
-    ///
-    /// Better:
-    ///
-    /// ```no_run
-    /// struct X {
-    ///     values: Vec<i32>,
-    /// }
-    /// ```
-    #[clippy::version = "1.33.0"]
-    pub VEC_BOX,
-    complexity,
-    "usage of `Vec<Box<T>>` where T: Sized, vector elements are already on the heap"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
-    /// Checks for usage of `Option<Option<_>>` in function signatures and type
-    /// definitions
-    ///
-    /// ### Why is this bad?
-    /// `Option<_>` represents an optional value. `Option<Option<_>>`
-    /// represents an optional value which itself wraps an optional. This is logically the
-    /// same thing as an optional value but has an unneeded extra level of wrapping.
-    ///
-    /// If you have a case where `Some(Some(_))`, `Some(None)` and `None` are distinct cases,
-    /// consider a custom `enum` instead, with clear names for each case.
-    ///
-    /// ### Example
-    /// ```no_run
-    /// fn get_data() -> Option<Option<u32>> {
-    ///     None
-    /// }
-    /// ```
-    ///
-    /// Better:
-    ///
-    /// ```no_run
-    /// pub enum Contents {
-    ///     Data(Vec<u8>), // Was Some(Some(Vec<u8>))
-    ///     NotYetFetched, // Was Some(None)
-    ///     None,          // Was None
-    /// }
-    ///
-    /// fn get_data() -> Contents {
-    ///     Contents::None
-    /// }
-    /// ```
-    #[clippy::version = "pre 1.29.0"]
-    pub OPTION_OPTION,
-    pedantic,
-    "usage of `Option<Option<T>>`"
 }
 
 declare_clippy_lint! {
@@ -164,53 +119,80 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of `&Box<T>` anywhere in the code.
-    /// Check the [Box documentation](https://doc.rust-lang.org/std/boxed/index.html) for more information.
+    /// Checks for usage of `Option<Option<_>>` in function signatures and type
+    /// definitions
     ///
     /// ### Why is this bad?
-    /// A `&Box<T>` parameter requires the function caller to box `T` first before passing it to a function.
-    /// Using `&T` defines a concrete type for the parameter and generalizes the function, this would also
-    /// auto-deref to `&T` at the function call site if passed a `&Box<T>`.
+    /// `Option<_>` represents an optional value. `Option<Option<_>>`
+    /// represents an optional value which itself wraps an optional. This is logically the
+    /// same thing as an optional value but has an unneeded extra level of wrapping.
+    ///
+    /// If you have a case where `Some(Some(_))`, `Some(None)` and `None` are distinct cases,
+    /// consider a custom `enum` instead, with clear names for each case.
     ///
     /// ### Example
-    /// ```rust,ignore
-    /// fn foo(bar: &Box<T>) { ... }
+    /// ```no_run
+    /// fn get_data() -> Option<Option<u32>> {
+    ///     None
+    /// }
     /// ```
     ///
     /// Better:
     ///
-    /// ```rust,ignore
-    /// fn foo(bar: &T) { ... }
+    /// ```no_run
+    /// pub enum Contents {
+    ///     Data(Vec<u8>), // Was Some(Some(Vec<u8>))
+    ///     NotYetFetched, // Was Some(None)
+    ///     None,          // Was None
+    /// }
+    ///
+    /// fn get_data() -> Contents {
+    ///     Contents::None
+    /// }
     /// ```
     #[clippy::version = "pre 1.29.0"]
-    pub BORROWED_BOX,
-    complexity,
-    "a borrow of a boxed type"
+    pub OPTION_OPTION,
+    pedantic,
+    "usage of `Option<Option<T>>`"
 }
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for usage of redundant allocations anywhere in the code.
+    /// Detects needlessly owned `Cow` types.
     ///
     /// ### Why is this bad?
-    /// Expressions such as `Rc<&T>`, `Rc<Rc<T>>`, `Rc<Arc<T>>`, `Rc<Box<T>>`, `Arc<&T>`, `Arc<Rc<T>>`,
-    /// `Arc<Arc<T>>`, `Arc<Box<T>>`, `Box<&T>`, `Box<Rc<T>>`, `Box<Arc<T>>`, `Box<Box<T>>`, add an unnecessary level of indirection.
+    /// The borrowed types are usually more flexible, in that e.g. a
+    /// `Cow<'_, str>` can accept both `&str` and `String` while
+    /// `Cow<'_, String>` can only accept `&String` and `String`. In
+    /// particular, `&str` is more general, because it allows for string
+    /// literals while `&String` can only be borrowed from a heap-owned
+    /// `String`).
+    ///
+    /// ### Known Problems
+    /// The lint does not check for usage of the type. There may be external
+    /// interfaces that require the use of an owned type.
+    ///
+    /// At least the `CString` type also has a different API than `CStr`: The
+    /// former has an `as_bytes` method which the latter calls `to_bytes`.
+    /// There is no guarantee that other types won't gain additional methods
+    /// leading to a similar mismatch.
+    ///
+    /// In addition, the lint only checks for the known problematic types
+    /// `String`, `Vec<_>`, `CString`, `OsString` and `PathBuf`. Custom types
+    /// that implement `ToOwned` will not be detected.
     ///
     /// ### Example
     /// ```no_run
-    /// # use std::rc::Rc;
-    /// fn foo(bar: Rc<&usize>) {}
+    /// let wrogn: std::borrow::Cow<'_, Vec<u8>>;
     /// ```
-    ///
-    /// Better:
-    ///
+    /// Use instead:
     /// ```no_run
-    /// fn foo(bar: &usize) {}
+    /// let right: std::borrow::Cow<'_, [u8]>;
     /// ```
-    #[clippy::version = "1.44.0"]
-    pub REDUNDANT_ALLOCATION,
-    perf,
-    "redundant allocation"
+    #[clippy::version = "1.87.0"]
+    pub OWNED_COW,
+    style,
+    "needlessly owned Cow type"
 }
 
 declare_clippy_lint! {
@@ -250,28 +232,6 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for types used in structs, parameters and `let`
-    /// declarations above a certain complexity threshold.
-    ///
-    /// ### Why is this bad?
-    /// Too complex types make the code less readable. Consider
-    /// using a `type` definition to simplify them.
-    ///
-    /// ### Example
-    /// ```no_run
-    /// # use std::rc::Rc;
-    /// struct Foo {
-    ///     inner: Rc<Vec<Vec<Box<(u32, u32, u32, u32)>>>>,
-    /// }
-    /// ```
-    #[clippy::version = "pre 1.29.0"]
-    pub TYPE_COMPLEXITY,
-    complexity,
-    "usage of very complex types that might be better factored into `type` definitions"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
     /// Checks for `Rc<Mutex<T>>`.
     ///
     /// ### Why restrict this?
@@ -303,13 +263,151 @@ declare_clippy_lint! {
     "usage of `Rc<Mutex<T>>`"
 }
 
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for usage of redundant allocations anywhere in the code.
+    ///
+    /// ### Why is this bad?
+    /// Expressions such as `Rc<&T>`, `Rc<Rc<T>>`, `Rc<Arc<T>>`, `Rc<Box<T>>`, `Arc<&T>`, `Arc<Rc<T>>`,
+    /// `Arc<Arc<T>>`, `Arc<Box<T>>`, `Box<&T>`, `Box<Rc<T>>`, `Box<Arc<T>>`, `Box<Box<T>>`, add an unnecessary level of indirection.
+    ///
+    /// ### Example
+    /// ```no_run
+    /// # use std::rc::Rc;
+    /// fn foo(bar: Rc<&usize>) {}
+    /// ```
+    ///
+    /// Better:
+    ///
+    /// ```no_run
+    /// fn foo(bar: &usize) {}
+    /// ```
+    #[clippy::version = "1.44.0"]
+    pub REDUNDANT_ALLOCATION,
+    perf,
+    "redundant allocation"
+}
+
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for types used in structs, parameters and `let`
+    /// declarations above a certain complexity threshold.
+    ///
+    /// ### Why is this bad?
+    /// Too complex types make the code less readable. Consider
+    /// using a `type` definition to simplify them.
+    ///
+    /// ### Example
+    /// ```no_run
+    /// # use std::rc::Rc;
+    /// struct PointMatrixContainer {
+    ///     matrix: Rc<Vec<Vec<Box<(u32, u32, u32, u32)>>>>,
+    /// }
+    ///
+    /// fn main() {
+    ///     let point_matrix: Vec<Vec<Box<(u32, u32, u32, u32)>>> = vec![
+    ///         vec![
+    ///             Box::new((1, 2, 3, 4)),
+    ///             Box::new((5, 6, 7, 8)),
+    ///         ],
+    ///         vec![
+    ///             Box::new((9, 10, 11, 12)),
+    ///         ],
+    ///     ];
+    ///
+    ///     let shared_point_matrix: Rc<Vec<Vec<Box<(u32, u32, u32, u32)>>>> = Rc::new(point_matrix);
+    ///
+    ///     let container = PointMatrixContainer {
+    ///         matrix: shared_point_matrix,
+    ///     };
+    ///
+    ///     // ...
+    /// }
+    /// ```
+    /// Use instead:
+    /// ### Example
+    /// ```no_run
+    /// # use std::rc::Rc;
+    /// type PointMatrix = Vec<Vec<Box<(u32, u32, u32, u32)>>>;
+    /// type SharedPointMatrix = Rc<PointMatrix>;
+    ///
+    /// struct PointMatrixContainer {
+    ///     matrix: SharedPointMatrix,
+    /// }
+    ///
+    /// fn main() {
+    ///     let point_matrix: PointMatrix = vec![
+    ///         vec![
+    ///             Box::new((1, 2, 3, 4)),
+    ///             Box::new((5, 6, 7, 8)),
+    ///         ],
+    ///         vec![
+    ///             Box::new((9, 10, 11, 12)),
+    ///         ],
+    ///     ];
+    ///
+    ///     let shared_point_matrix: SharedPointMatrix = Rc::new(point_matrix);
+    ///
+    ///     let container = PointMatrixContainer {
+    ///         matrix: shared_point_matrix,
+    ///     };
+    ///
+    ///     // ...
+    /// }
+    /// ```
+    #[clippy::version = "pre 1.29.0"]
+    pub TYPE_COMPLEXITY,
+    complexity,
+    "usage of very complex types that might be better factored into `type` definitions"
+}
+
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for usage of `Vec<Box<T>>` where T: Sized anywhere in the code.
+    /// Check the [Box documentation](https://doc.rust-lang.org/std/boxed/index.html) for more information.
+    ///
+    /// ### Why is this bad?
+    /// `Vec` already keeps its contents in a separate area on
+    /// the heap. So if you `Box` its contents, you just add another level of indirection.
+    ///
+    /// ### Example
+    /// ```no_run
+    /// struct X {
+    ///     values: Vec<Box<i32>>,
+    /// }
+    /// ```
+    ///
+    /// Better:
+    ///
+    /// ```no_run
+    /// struct X {
+    ///     values: Vec<i32>,
+    /// }
+    /// ```
+    #[clippy::version = "1.33.0"]
+    pub VEC_BOX,
+    complexity,
+    "usage of `Vec<Box<T>>` where T: Sized, vector elements are already on the heap"
+}
+
+impl_lint_pass!(Types => [
+    BORROWED_BOX,
+    BOX_COLLECTION,
+    LINKEDLIST,
+    OPTION_OPTION,
+    OWNED_COW,
+    RC_BUFFER,
+    RC_MUTEX,
+    REDUNDANT_ALLOCATION,
+    TYPE_COMPLEXITY,
+    VEC_BOX,
+]);
+
 pub struct Types {
     vec_box_size_threshold: u64,
     type_complexity_threshold: u64,
     avoid_breaking_exported_api: bool,
 }
-
-impl_lint_pass!(Types => [BOX_COLLECTION, VEC_BOX, OPTION_OPTION, LINKEDLIST, BORROWED_BOX, REDUNDANT_ALLOCATION, RC_BUFFER, RC_MUTEX, TYPE_COMPLEXITY]);
 
 impl<'tcx> LateLintPass<'tcx> for Types {
     fn check_fn(
@@ -321,12 +419,10 @@ impl<'tcx> LateLintPass<'tcx> for Types {
         _: Span,
         def_id: LocalDefId,
     ) {
-        let is_in_trait_impl = if let hir::Node::Item(item) = cx.tcx.hir_node_by_def_id(
-            cx.tcx
-                .hir()
-                .get_parent_item(cx.tcx.local_def_id_to_hir_id(def_id))
-                .def_id,
-        ) {
+        let is_in_trait_impl = if let hir::Node::Item(item) = cx
+            .tcx
+            .hir_node_by_def_id(cx.tcx.hir_get_parent_item(cx.tcx.local_def_id_to_hir_id(def_id)).def_id)
+        {
             matches!(item.kind, ItemKind::Impl(hir::Impl { of_trait: Some(_), .. }))
         } else {
             false
@@ -339,8 +435,8 @@ impl<'tcx> LateLintPass<'tcx> for Types {
             decl,
             CheckTyContext {
                 is_in_trait_impl,
-                is_exported,
                 in_body: matches!(fn_kind, FnKind::Closure),
+                is_exported,
                 ..CheckTyContext::default()
             },
         );
@@ -350,7 +446,7 @@ impl<'tcx> LateLintPass<'tcx> for Types {
         let is_exported = cx.effective_visibilities.is_exported(item.owner_id.def_id);
 
         match item.kind {
-            ItemKind::Static(ty, _, _) | ItemKind::Const(ty, _, _) => self.check_ty(
+            ItemKind::Static(_, _, ty, _) | ItemKind::Const(_, _, ty, _) => self.check_ty(
                 cx,
                 ty,
                 CheckTyContext {
@@ -368,7 +464,7 @@ impl<'tcx> LateLintPass<'tcx> for Types {
             ImplItemKind::Const(ty, _) => {
                 let is_in_trait_impl = if let hir::Node::Item(item) = cx
                     .tcx
-                    .hir_node_by_def_id(cx.tcx.hir().get_parent_item(item.hir_id()).def_id)
+                    .hir_node_by_def_id(cx.tcx.hir_get_parent_item(item.hir_id()).def_id)
                 {
                     matches!(item.kind, ItemKind::Impl(hir::Impl { of_trait: Some(_), .. }))
                 } else {
@@ -446,11 +542,11 @@ impl<'tcx> LateLintPass<'tcx> for Types {
 }
 
 impl Types {
-    pub fn new(vec_box_size_threshold: u64, type_complexity_threshold: u64, avoid_breaking_exported_api: bool) -> Self {
+    pub fn new(conf: &'static Conf) -> Self {
         Self {
-            vec_box_size_threshold,
-            type_complexity_threshold,
-            avoid_breaking_exported_api,
+            vec_box_size_threshold: conf.vec_box_size_threshold,
+            type_complexity_threshold: conf.type_complexity_threshold,
+            avoid_breaking_exported_api: conf.avoid_breaking_exported_api,
         }
     }
 
@@ -494,25 +590,26 @@ impl Types {
             TyKind::Path(ref qpath) if !context.in_body => {
                 let hir_id = hir_ty.hir_id;
                 let res = cx.qpath_res(qpath, hir_id);
-                if let Some(def_id) = res.opt_def_id() {
-                    if self.is_type_change_allowed(context) {
-                        // All lints that are being checked in this block are guarded by
-                        // the `avoid_breaking_exported_api` configuration. When adding a
-                        // new lint, please also add the name to the configuration documentation
-                        // in `clippy_config::conf`
+                if let Some(def_id) = res.opt_def_id()
+                    && self.is_type_change_allowed(context)
+                {
+                    // All lints that are being checked in this block are guarded by
+                    // the `avoid_breaking_exported_api` configuration. When adding a
+                    // new lint, please also add the name to the configuration documentation
+                    // in `clippy_config::conf`
 
-                        let mut triggered = false;
-                        triggered |= box_collection::check(cx, hir_ty, qpath, def_id);
-                        triggered |= redundant_allocation::check(cx, hir_ty, qpath, def_id);
-                        triggered |= rc_buffer::check(cx, hir_ty, qpath, def_id);
-                        triggered |= vec_box::check(cx, hir_ty, qpath, def_id, self.vec_box_size_threshold);
-                        triggered |= option_option::check(cx, hir_ty, qpath, def_id);
-                        triggered |= linked_list::check(cx, hir_ty, def_id);
-                        triggered |= rc_mutex::check(cx, hir_ty, qpath, def_id);
+                    let mut triggered = false;
+                    triggered |= box_collection::check(cx, hir_ty, qpath, def_id);
+                    triggered |= redundant_allocation::check(cx, hir_ty, qpath, def_id);
+                    triggered |= rc_buffer::check(cx, hir_ty, qpath, def_id);
+                    triggered |= vec_box::check(cx, hir_ty, qpath, def_id, self.vec_box_size_threshold);
+                    triggered |= option_option::check(cx, hir_ty, qpath, def_id);
+                    triggered |= linked_list::check(cx, hir_ty, def_id);
+                    triggered |= rc_mutex::check(cx, hir_ty, qpath, def_id);
+                    triggered |= owned_cow::check(cx, qpath, def_id);
 
-                        if triggered {
-                            return;
-                        }
+                    if triggered {
+                        return;
                     }
                 }
                 match *qpath {
@@ -528,7 +625,7 @@ impl Types {
                                     _ => None,
                                 })
                         }) {
-                            self.check_ty(cx, ty, context);
+                            self.check_ty(cx, ty.as_unambig_ty(), context);
                         }
                     },
                     QPath::Resolved(None, p) => {
@@ -542,7 +639,7 @@ impl Types {
                                     _ => None,
                                 })
                         }) {
-                            self.check_ty(cx, ty, context);
+                            self.check_ty(cx, ty.as_unambig_ty(), context);
                         }
                     },
                     QPath::TypeRelative(ty, seg) => {
@@ -553,20 +650,27 @@ impl Types {
                                 GenericArg::Type(ty) => Some(ty),
                                 _ => None,
                             }) {
-                                self.check_ty(cx, ty, context);
+                                self.check_ty(cx, ty.as_unambig_ty(), context);
                             }
                         }
                     },
-                    QPath::LangItem(..) => {},
                 }
             },
-            TyKind::Ref(lt, ref mut_ty) => {
+            TyKind::Path(ref qpath) => {
+                let res = cx.qpath_res(qpath, hir_ty.hir_id);
+                if let Some(def_id) = res.opt_def_id()
+                    && self.is_type_change_allowed(context)
+                {
+                    owned_cow::check(cx, qpath, def_id);
+                }
+            },
+            TyKind::Ref(lt, inner_ty, mutbl) => {
                 context.is_nested_call = true;
-                if !borrowed_box::check(cx, hir_ty, lt, mut_ty) {
-                    self.check_ty(cx, mut_ty.ty, context);
+                if !borrowed_box::check(cx, hir_ty, lt, inner_ty, mutbl) {
+                    self.check_ty(cx, inner_ty, context);
                 }
             },
-            TyKind::Slice(ty) | TyKind::Array(ty, _) | TyKind::Ptr(MutTy { ty, .. }) => {
+            TyKind::Slice(ty) | TyKind::Array(ty, _) | TyKind::Ptr(ty, ..) => {
                 context.is_nested_call = true;
                 self.check_ty(cx, ty, context);
             },
@@ -587,7 +691,7 @@ impl Types {
     }
 }
 
-#[allow(clippy::struct_excessive_bools, clippy::struct_field_names)]
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Default)]
 struct CheckTyContext {
     is_in_trait_impl: bool,

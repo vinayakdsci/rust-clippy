@@ -1,13 +1,12 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::ty::is_type_lang_item;
-use clippy_utils::{match_def_path, paths};
+use clippy_utils::res::MaybeDef as _;
+use clippy_utils::sym;
 use rustc_ast::ast::LitKind;
+use rustc_attr_ir::lang_items::LangItem;
 use rustc_errors::Applicability;
-use rustc_hir::{BorrowKind, Expr, ExprKind, LangItem, Mutability};
-use rustc_lint::{LateContext, LateLintPass};
+use rustc_hir::{BorrowKind, Expr, ExprKind, Mutability};
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
 use rustc_middle::ty;
-use rustc_session::declare_lint_pass;
-use rustc_span::symbol::sym;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -31,7 +30,10 @@ declare_clippy_lint! {
     style,
     "detects cases of references to owned empty strings being passed as an argument to a function expecting `&str`"
 }
-declare_lint_pass!(UnnecessaryOwnedEmptyStrings => [UNNECESSARY_OWNED_EMPTY_STRINGS]);
+
+declare_lint_pass!(UnnecessaryOwnedEmptyStrings => [
+    UNNECESSARY_OWNED_EMPTY_STRINGS,
+]);
 
 impl<'tcx> LateLintPass<'tcx> for UnnecessaryOwnedEmptyStrings {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
@@ -42,7 +44,8 @@ impl<'tcx> LateLintPass<'tcx> for UnnecessaryOwnedEmptyStrings {
             && let ty::Ref(_, inner_str, _) = cx.typeck_results().expr_ty_adjusted(expr).kind()
             && inner_str.is_str()
         {
-            if match_def_path(cx, fun_def_id, &paths::STRING_NEW) {
+            let fun_name = cx.tcx.get_diagnostic_name(fun_def_id);
+            if fun_name == Some(sym::string_new) {
                 span_lint_and_sugg(
                     cx,
                     UNNECESSARY_OWNED_EMPTY_STRINGS,
@@ -52,13 +55,13 @@ impl<'tcx> LateLintPass<'tcx> for UnnecessaryOwnedEmptyStrings {
                     "\"\"".to_owned(),
                     Applicability::MachineApplicable,
                 );
-            } else if cx.tcx.is_diagnostic_item(sym::from_fn, fun_def_id)
-                && let [.., last_arg] = args
-                && let ExprKind::Lit(spanned) = &last_arg.kind
+            } else if fun_name == Some(sym::from_fn)
+                && let [arg] = args
+                && let ExprKind::Lit(spanned) = &arg.kind
                 && let LitKind::Str(symbol, _) = spanned.node
                 && symbol.is_empty()
                 && let inner_expr_type = cx.typeck_results().expr_ty(inner_expr)
-                && is_type_lang_item(cx, inner_expr_type, LangItem::String)
+                && inner_expr_type.is_lang_item(cx, LangItem::String)
             {
                 span_lint_and_sugg(
                     cx,

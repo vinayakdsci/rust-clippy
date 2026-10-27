@@ -1,7 +1,6 @@
-// FIXME: run-rustfix waiting on multi-span suggestions
-//@no-rustfix
 #![warn(clippy::ref_binding_to_reference)]
-#![allow(clippy::needless_borrowed_reference, clippy::explicit_auto_deref)]
+#![expect(clippy::explicit_auto_deref)]
+#![allow(clippy::needless_borrowed_reference)]
 
 fn f1(_: &str) {}
 macro_rules! m2 {
@@ -15,7 +14,6 @@ macro_rules! m3 {
     };
 }
 
-#[allow(dead_code)]
 fn main() {
     let x = String::new();
 
@@ -26,17 +24,22 @@ fn main() {
     };
 
     // Err, reference to a &String
+    #[expect(
+        clippy::ref_binding_to_reference,
+        reason = "The suggestion doesn't compile, see https://github.com/rust-lang/rust-clippy/issues/17370"
+    )]
     let _: &&String = match Some(&x) {
         Some(ref x) => x,
-        //~^ ERROR: this pattern creates a reference to a reference
-        //~| NOTE: `-D clippy::ref-binding-to-reference` implied by `-D warnings`
         None => return,
     };
 
     // Err, reference to a &String
+    #[expect(
+        clippy::ref_binding_to_reference,
+        reason = "The suggestion doesn't compile, see https://github.com/rust-lang/rust-clippy/issues/17370"
+    )]
     let _: &&String = match Some(&x) {
         Some(ref x) => {
-            //~^ ERROR: this pattern creates a reference to a reference
             f1(x);
             f1(*x);
             x
@@ -47,20 +50,22 @@ fn main() {
     // Err, reference to a &String
     match Some(&x) {
         Some(ref x) => m2!(x),
-        //~^ ERROR: this pattern creates a reference to a reference
+        //~^ ref_binding_to_reference
         None => return,
     }
 
     // Err, reference to a &String
     let _ = |&ref x: &&String| {
-        //~^ ERROR: this pattern creates a reference to a reference
+        //~^ ref_binding_to_reference
+
         let _: &&String = x;
     };
 }
 
 // Err, reference to a &String
 fn f2<'a>(&ref x: &&'a String) -> &'a String {
-    //~^ ERROR: this pattern creates a reference to a reference
+    //~^ ref_binding_to_reference
+
     let _: &&String = x;
     *x
 }
@@ -68,7 +73,8 @@ fn f2<'a>(&ref x: &&'a String) -> &'a String {
 trait T1 {
     // Err, reference to a &String
     fn f(&ref x: &&String) {
-        //~^ ERROR: this pattern creates a reference to a reference
+        //~^ ref_binding_to_reference
+
         let _: &&String = x;
     }
 }
@@ -77,7 +83,8 @@ struct S;
 impl T1 for S {
     // Err, reference to a &String
     fn f(&ref x: &&String) {
-        //~^ ERROR: this pattern creates a reference to a reference
+        //~^ ref_binding_to_reference
+
         let _: &&String = x;
     }
 }

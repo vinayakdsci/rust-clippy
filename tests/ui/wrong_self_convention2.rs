@@ -1,5 +1,4 @@
 #![warn(clippy::wrong_self_convention)]
-#![allow(dead_code)]
 
 fn main() {}
 
@@ -52,7 +51,8 @@ mod issue7179 {
 
         // lint
         pub fn from_be_self(self) -> Self {
-            //~^ ERROR: methods called `from_*` usually take no `self`
+            //~^ wrong_self_convention
+
             S(i32::from_be(self.0))
         }
     }
@@ -62,7 +62,7 @@ mod issue7179 {
         fn from_be(s: Self) -> Self;
         // lint
         fn from_be_self(self) -> Self;
-        //~^ ERROR: methods called `from_*` usually take no `self`
+        //~^ wrong_self_convention
     }
 
     trait Foo: Sized {

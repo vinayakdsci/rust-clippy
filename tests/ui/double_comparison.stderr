@@ -1,5 +1,5 @@
 error: this binary expression can be simplified
-  --> tests/ui/double_comparison.rs:6:8
+  --> tests/ui/double_comparison.rs:4:8
    |
 LL |     if x == y || x < y {
    |        ^^^^^^^^^^^^^^^ help: try: `x <= y`
@@ -8,7 +8,7 @@ LL |     if x == y || x < y {
    = help: to override `-D warnings` add `#[allow(clippy::double_comparisons)]`
 
 error: this binary expression can be simplified
-  --> tests/ui/double_comparison.rs:9:8
+  --> tests/ui/double_comparison.rs:8:8
    |
 LL |     if x < y || x == y {
    |        ^^^^^^^^^^^^^^^ help: try: `x <= y`
@@ -20,34 +20,64 @@ LL |     if x == y || x > y {
    |        ^^^^^^^^^^^^^^^ help: try: `x >= y`
 
 error: this binary expression can be simplified
-  --> tests/ui/double_comparison.rs:15:8
+  --> tests/ui/double_comparison.rs:16:8
    |
 LL |     if x > y || x == y {
    |        ^^^^^^^^^^^^^^^ help: try: `x >= y`
 
 error: this binary expression can be simplified
-  --> tests/ui/double_comparison.rs:18:8
+  --> tests/ui/double_comparison.rs:20:8
    |
 LL |     if x < y || x > y {
    |        ^^^^^^^^^^^^^^ help: try: `x != y`
 
 error: this binary expression can be simplified
-  --> tests/ui/double_comparison.rs:21:8
+  --> tests/ui/double_comparison.rs:24:8
    |
 LL |     if x > y || x < y {
    |        ^^^^^^^^^^^^^^ help: try: `x != y`
 
 error: this binary expression can be simplified
-  --> tests/ui/double_comparison.rs:24:8
+  --> tests/ui/double_comparison.rs:28:8
    |
 LL |     if x <= y && x >= y {
    |        ^^^^^^^^^^^^^^^^ help: try: `x == y`
 
 error: this binary expression can be simplified
-  --> tests/ui/double_comparison.rs:27:8
+  --> tests/ui/double_comparison.rs:32:8
    |
 LL |     if x >= y && x <= y {
    |        ^^^^^^^^^^^^^^^^ help: try: `x == y`
 
-error: aborting due to 8 previous errors
+error: this binary expression can be simplified
+  --> tests/ui/double_comparison.rs:36:8
+   |
+LL |     if x != y && x <= y {
+   |        ^^^^^^^^^^^^^^^^ help: try: `x < y`
+
+error: this binary expression can be simplified
+  --> tests/ui/double_comparison.rs:40:8
+   |
+LL |     if x <= y && x != y {
+   |        ^^^^^^^^^^^^^^^^ help: try: `x < y`
+
+error: this binary expression can be simplified
+  --> tests/ui/double_comparison.rs:44:8
+   |
+LL |     if x != y && x >= y {
+   |        ^^^^^^^^^^^^^^^^ help: try: `x > y`
+
+error: this binary expression can be simplified
+  --> tests/ui/double_comparison.rs:48:8
+   |
+LL |     if x >= y && x != y {
+   |        ^^^^^^^^^^^^^^^^ help: try: `x > y`
+
+error: this binary expression can be simplified
+  --> tests/ui/double_comparison.rs:56:6
+   |
+LL |     !(left < right || left == right)
+   |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `(left <= right)`
+
+error: aborting due to 13 previous errors
 

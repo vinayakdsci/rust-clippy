@@ -1,5 +1,5 @@
 error: methods called `from_*` usually take no `self`
-  --> tests/ui/wrong_self_convention2.rs:54:29
+  --> tests/ui/wrong_self_convention2.rs:53:29
    |
 LL |         pub fn from_be_self(self) -> Self {
    |                             ^^^^

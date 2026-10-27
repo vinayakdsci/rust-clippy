@@ -1,9 +1,9 @@
+use clippy_config::Conf;
 use clippy_utils::diagnostics::span_lint;
 use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashSet;
-use rustc_lint::{EarlyContext, EarlyLintPass, Level, LintContext};
-use rustc_session::impl_lint_pass;
-use unicode_script::{Script, UnicodeScript};
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext as _, impl_lint_pass};
+use unicode_script::{Script, UnicodeScript as _};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -44,30 +44,31 @@ declare_clippy_lint! {
     "usage of non-allowed Unicode scripts"
 }
 
-#[derive(Clone, Debug)]
+impl_lint_pass!(DisallowedScriptIdents => [DISALLOWED_SCRIPT_IDENTS]);
+
 pub struct DisallowedScriptIdents {
     whitelist: FxHashSet<Script>,
 }
 
 impl DisallowedScriptIdents {
-    pub fn new(whitelist: &[String]) -> Self {
-        let whitelist = whitelist
-            .iter()
-            .map(String::as_str)
-            .filter_map(Script::from_full_name)
-            .collect();
-        Self { whitelist }
+    pub fn new(conf: &'static Conf) -> Self {
+        Self {
+            whitelist: conf
+                .allowed_scripts
+                .iter()
+                .map(String::as_str)
+                .filter_map(Script::from_full_name)
+                .collect(),
+        }
     }
 }
-
-impl_lint_pass!(DisallowedScriptIdents => [DISALLOWED_SCRIPT_IDENTS]);
 
 impl EarlyLintPass for DisallowedScriptIdents {
     fn check_crate(&mut self, cx: &EarlyContext<'_>, _: &ast::Crate) {
         // Implementation is heavily inspired by the implementation of [`non_ascii_idents`] lint:
-        // https://github.com/rust-lang/rust/blob/master/compiler/rustc_lint/src/non_ascii_idents.rs
+        // https://github.com/rust-lang/rust/blob/HEAD/compiler/rustc_lint/src/non_ascii_idents.rs
 
-        let check_disallowed_script_idents = cx.builder.lint_level(DISALLOWED_SCRIPT_IDENTS).0 != Level::Allow;
+        let check_disallowed_script_idents = !cx.builder.lint_level_spec(DISALLOWED_SCRIPT_IDENTS).is_allow();
         if !check_disallowed_script_idents {
             return;
         }
@@ -76,36 +77,35 @@ impl EarlyLintPass for DisallowedScriptIdents {
         // Sort by `Span` so that error messages make sense with respect to the
         // order of identifier locations in the code.
         let mut symbols: Vec<_> = symbols.iter().collect();
-        symbols.sort_unstable_by_key(|k| k.1);
+        symbols.sort_unstable_by_key(|k| k.1.lo_hi());
 
-        for (symbol, &span) in &symbols {
+        for &(symbol, &span) in &symbols {
             // Note: `symbol.as_str()` is an expensive operation, thus should not be called
             // more than once for a single symbol.
             let symbol_str = symbol.as_str();
-            if symbol_str.is_ascii() {
-                continue;
-            }
 
-            for c in symbol_str.chars() {
-                // We want to iterate through all the scripts associated with this character
-                // and check whether at least of one scripts is in the whitelist.
-                let forbidden_script = c
-                    .script_extension()
-                    .iter()
-                    .find(|script| !self.whitelist.contains(script));
-                if let Some(script) = forbidden_script {
-                    span_lint(
-                        cx,
-                        DISALLOWED_SCRIPT_IDENTS,
-                        span,
-                        format!(
-                            "identifier `{symbol_str}` has a Unicode script that is not allowed by configuration: {}",
-                            script.full_name()
-                        ),
-                    );
-                    // We don't want to spawn warning multiple times over a single identifier.
-                    break;
-                }
+            // Check if any character in the symbol is not part of any allowed script.
+            // Fast path for ascii-only idents.
+            if !symbol_str.is_ascii()
+                && let Some(script) = symbol_str.chars().find_map(|c| {
+                    if c.is_ascii() {
+                        return None;
+                    }
+
+                    c.script_extension()
+                        .iter()
+                        .find(|script| !self.whitelist.contains(script))
+                })
+            {
+                span_lint(
+                    cx,
+                    DISALLOWED_SCRIPT_IDENTS,
+                    span,
+                    format!(
+                        "identifier `{symbol_str}` has a Unicode script that is not allowed by configuration: {}",
+                        script.full_name()
+                    ),
+                );
             }
         }
     }

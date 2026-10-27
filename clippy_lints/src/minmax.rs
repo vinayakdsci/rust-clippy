@@ -1,11 +1,11 @@
-use clippy_utils::consts::{constant_simple, Constant};
+use clippy_utils::consts::{ConstEvalCtxt, Constant};
 use clippy_utils::diagnostics::span_lint;
-use clippy_utils::is_trait_method;
+use clippy_utils::res::{MaybeDef as _, MaybeTypeckRes as _};
+use clippy_utils::sym;
 use rustc_hir::{Expr, ExprKind};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::declare_lint_pass;
-use rustc_span::sym;
-use std::cmp::Ordering;
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
+use rustc_span::SyntaxContext;
+use std::cmp::Ordering::{Equal, Greater, Less};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -36,26 +36,21 @@ declare_lint_pass!(MinMaxPass => [MIN_MAX]);
 
 impl<'tcx> LateLintPass<'tcx> for MinMaxPass {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
-        if let Some((outer_max, outer_c, oe)) = min_max(cx, expr) {
-            if let Some((inner_max, inner_c, ie)) = min_max(cx, oe) {
-                if outer_max == inner_max {
-                    return;
-                }
-                match (
-                    outer_max,
-                    Constant::partial_cmp(cx.tcx, cx.typeck_results().expr_ty(ie), &outer_c, &inner_c),
-                ) {
-                    (_, None) | (MinMax::Max, Some(Ordering::Less)) | (MinMax::Min, Some(Ordering::Greater)) => (),
-                    _ => {
-                        span_lint(
-                            cx,
-                            MIN_MAX,
-                            expr.span,
-                            "this `min`/`max` combination leads to constant result",
-                        );
-                    },
-                }
-            }
+        if let Some((outer_max, outer_c, oe)) = min_max(cx, expr)
+            && let Some((inner_max, inner_c, ie)) = min_max(cx, oe)
+            && outer_max != inner_max
+            && let Some(ord) = Constant::partial_cmp(cx.tcx, cx.typeck_results().expr_ty(ie), &outer_c, &inner_c)
+            && matches!(
+                (outer_max, ord),
+                (MinMax::Max, Equal | Greater) | (MinMax::Min, Equal | Less)
+            )
+        {
+            span_lint(
+                cx,
+                MIN_MAX,
+                expr.span,
+                "this `min`/`max` combination leads to constant result",
+            );
         }
     }
 }
@@ -66,7 +61,7 @@ enum MinMax {
     Max,
 }
 
-fn min_max<'a, 'tcx>(cx: &LateContext<'tcx>, expr: &'a Expr<'a>) -> Option<(MinMax, Constant<'tcx>, &'a Expr<'a>)> {
+fn min_max<'a>(cx: &LateContext<'_>, expr: &'a Expr<'a>) -> Option<(MinMax, Constant, &'a Expr<'a>)> {
     match expr.kind {
         ExprKind::Call(path, args) => {
             if let ExprKind::Path(ref qpath) = path.kind {
@@ -74,8 +69,8 @@ fn min_max<'a, 'tcx>(cx: &LateContext<'tcx>, expr: &'a Expr<'a>) -> Option<(MinM
                     .qpath_res(qpath, path.hir_id)
                     .opt_def_id()
                     .and_then(|def_id| match cx.tcx.get_diagnostic_name(def_id) {
-                        Some(sym::cmp_min) => fetch_const(cx, None, args, MinMax::Min),
-                        Some(sym::cmp_max) => fetch_const(cx, None, args, MinMax::Max),
+                        Some(sym::cmp_min) => fetch_const(cx, expr.span.ctxt(), None, args, MinMax::Min),
+                        Some(sym::cmp_max) => fetch_const(cx, expr.span.ctxt(), None, args, MinMax::Max),
                         _ => None,
                     })
             } else {
@@ -83,14 +78,15 @@ fn min_max<'a, 'tcx>(cx: &LateContext<'tcx>, expr: &'a Expr<'a>) -> Option<(MinM
             }
         },
         ExprKind::MethodCall(path, receiver, args @ [_], _) => {
-            if cx.typeck_results().expr_ty(receiver).is_floating_point() || is_trait_method(cx, expr, sym::Ord) {
-                if path.ident.name == sym!(max) {
-                    fetch_const(cx, Some(receiver), args, MinMax::Max)
-                } else if path.ident.name == sym!(min) {
-                    fetch_const(cx, Some(receiver), args, MinMax::Min)
-                } else {
-                    None
-                }
+            let m = match path.ident.name {
+                sym::max => MinMax::Max,
+                sym::min => MinMax::Min,
+                _ => return None,
+            };
+            if cx.typeck_results().expr_ty(receiver).is_floating_point()
+                || cx.ty_based_def(expr).opt_parent(cx).is_diag_item(cx, sym::Ord)
+            {
+                fetch_const(cx, expr.span.ctxt(), Some(receiver), args, m)
             } else {
                 None
             }
@@ -99,27 +95,24 @@ fn min_max<'a, 'tcx>(cx: &LateContext<'tcx>, expr: &'a Expr<'a>) -> Option<(MinM
     }
 }
 
-fn fetch_const<'a, 'tcx>(
-    cx: &LateContext<'tcx>,
+fn fetch_const<'a>(
+    cx: &LateContext<'_>,
+    ctxt: SyntaxContext,
     receiver: Option<&'a Expr<'a>>,
     args: &'a [Expr<'a>],
     m: MinMax,
-) -> Option<(MinMax, Constant<'tcx>, &'a Expr<'a>)> {
+) -> Option<(MinMax, Constant, &'a Expr<'a>)> {
     let mut args = receiver.into_iter().chain(args);
     let first_arg = args.next()?;
     let second_arg = args.next()?;
     if args.next().is_some() {
         return None;
     }
-    constant_simple(cx, cx.typeck_results(), first_arg).map_or_else(
-        || constant_simple(cx, cx.typeck_results(), second_arg).map(|c| (m, c, first_arg)),
-        |c| {
-            if constant_simple(cx, cx.typeck_results(), second_arg).is_none() {
-                // otherwise ignore
-                Some((m, c, second_arg))
-            } else {
-                None
-            }
-        },
-    )
+    let ecx = ConstEvalCtxt::new(cx);
+    match (ecx.eval_local(first_arg, ctxt), ecx.eval_local(second_arg, ctxt)) {
+        (Some(c), None) => Some((m, c, second_arg)),
+        (None, Some(c)) => Some((m, c, first_arg)),
+        // otherwise ignore
+        _ => None,
+    }
 }

@@ -1,11 +1,11 @@
+use clippy_config::Conf;
 use clippy_utils::diagnostics::span_lint_and_then;
 use rustc_errors::Applicability;
 use rustc_hir::{Item, ItemKind};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::ty::layout::LayoutOf;
-use rustc_middle::ty::{self, ConstKind};
-use rustc_session::impl_lint_pass;
-use rustc_span::{BytePos, Pos, Span};
+use rustc_lint::{LateContext, LateLintPass, impl_lint_pass};
+use rustc_middle::ty::layout::LayoutOf as _;
+use rustc_middle::ty::{self, Ty, Unnormalized};
+use rustc_span::{BytePos, Pos as _, Span};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -31,35 +31,57 @@ declare_clippy_lint! {
     "large non-scalar const array may cause performance overhead"
 }
 
+impl_lint_pass!(LargeConstArrays => [LARGE_CONST_ARRAYS]);
+
 pub struct LargeConstArrays {
-    maximum_allowed_size: u128,
+    maximum_allowed_size: u64,
 }
 
 impl LargeConstArrays {
-    #[must_use]
-    pub fn new(maximum_allowed_size: u128) -> Self {
-        Self { maximum_allowed_size }
+    pub fn new(conf: &'static Conf) -> Self {
+        Self {
+            maximum_allowed_size: conf.array_size_threshold,
+        }
+    }
+
+    /// Checks recursively checks whether `ty` has an array exceeding allowed size
+    fn check_impl<'a>(&self, cx: &LateContext<'a>, ty: Ty<'a>) -> bool {
+        match ty.kind() {
+            ty::Adt(adt_def, args) => adt_def
+                .all_fields()
+                .any(|f| self.check_impl(cx, f.ty(cx.tcx, args).skip_norm_wip())),
+            ty::Array(element_type, cst) => {
+                let normalized = cx
+                    .tcx
+                    .try_normalize_erasing_regions(cx.typing_env(), Unnormalized::new_wip(*cst))
+                    .unwrap_or(*cst);
+                if let Some(element_count) = normalized.try_to_target_usize(cx.tcx)
+                    && let Ok(element_size) = cx.layout_of(*element_type).map(|l| l.size.bytes())
+                    && u128::from(self.maximum_allowed_size) < u128::from(element_count) * u128::from(element_size)
+                {
+                    true
+                } else {
+                    false
+                }
+            },
+            ty::Tuple(fields) => fields.iter().any(|f| self.check_impl(cx, f)),
+            _ => false,
+        }
     }
 }
 
-impl_lint_pass!(LargeConstArrays => [LARGE_CONST_ARRAYS]);
-
 impl<'tcx> LateLintPass<'tcx> for LargeConstArrays {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
-        if !item.span.from_expansion()
-            && let ItemKind::Const(_, generics, _) = &item.kind
+        if let ItemKind::Const(ident, generics, _, _) = &item.kind
             // Since static items may not have generics, skip generic const items.
             // FIXME(generic_const_items): I don't think checking `generics.hwcp` suffices as it
             // doesn't account for empty where-clauses that only consist of keyword `where` IINM.
             && generics.params.is_empty() && !generics.has_where_clause_predicates
-            && let ty = cx.tcx.type_of(item.owner_id).instantiate_identity()
-            && let ty::Array(element_type, cst) = ty.kind()
-            && let ConstKind::Value(_, ty::ValTree::Leaf(element_count)) = cst.kind()
-            && let element_count = element_count.to_target_usize(cx.tcx)
-            && let Ok(element_size) = cx.layout_of(*element_type).map(|l| l.size.bytes())
-            && self.maximum_allowed_size < u128::from(element_count) * u128::from(element_size)
+            && !item.span.from_expansion()
+            && let ty = cx.tcx.type_of(item.owner_id).instantiate_identity().skip_norm_wip()
+            && self.check_impl(cx, ty)
         {
-            let hi_pos = item.ident.span.lo() - BytePos::from_usize(1);
+            let hi_pos = ident.span.lo() - BytePos::from_usize(1);
             let sugg_span = Span::new(
                 hi_pos - BytePos::from_usize("const".len()),
                 hi_pos,

@@ -1,10 +1,12 @@
+use clippy_config::Conf;
 use clippy_config::types::PubUnderscoreFieldsBehaviour;
 use clippy_utils::attrs::is_doc_hidden;
 use clippy_utils::diagnostics::span_lint_hir_and_then;
-use clippy_utils::is_path_lang_item;
-use rustc_hir::{FieldDef, Item, ItemKind, LangItem};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::impl_lint_pass;
+use clippy_utils::res::{MaybeDef as _, MaybeResPath as _};
+use clippy_utils::sym::PhantomPinned;
+use rustc_attr_ir::lang_items::LangItem;
+use rustc_hir::{FieldDef, Item, ItemKind};
+use rustc_lint::{LateContext, LateLintPass, impl_lint_pass};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -41,15 +43,23 @@ declare_clippy_lint! {
     "struct field prefixed with underscore and marked public"
 }
 
-pub struct PubUnderscoreFields {
-    pub behavior: PubUnderscoreFieldsBehaviour,
-}
 impl_lint_pass!(PubUnderscoreFields => [PUB_UNDERSCORE_FIELDS]);
+
+pub struct PubUnderscoreFields {
+    behavior: PubUnderscoreFieldsBehaviour,
+}
+impl PubUnderscoreFields {
+    pub fn new(conf: &'static Conf) -> Self {
+        Self {
+            behavior: conf.pub_underscore_fields_behavior,
+        }
+    }
+}
 
 impl<'tcx> LateLintPass<'tcx> for PubUnderscoreFields {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
         // This lint only pertains to structs.
-        let ItemKind::Struct(variant_data, _) = &item.kind else {
+        let ItemKind::Struct(_, _, variant_data) = &item.kind else {
             return;
         };
 
@@ -65,9 +75,10 @@ impl<'tcx> LateLintPass<'tcx> for PubUnderscoreFields {
             // Only pertains to fields that start with an underscore, and are public.
             if field.ident.as_str().starts_with('_') && is_visible(field)
                 // We ignore fields that have `#[doc(hidden)]`.
-                && !is_doc_hidden(cx.tcx.hir().attrs(field.hir_id))
-                // We ignore fields that are `PhantomData`.
-                && !is_path_lang_item(cx, field.ty, LangItem::PhantomData)
+                && !is_doc_hidden(cx.tcx.hir_attrs(field.hir_id))
+                // We ignore fields that are `PhantomData` and `PhantomPinned`.
+                && !field.ty.basic_res().is_lang_item(cx, LangItem::PhantomData)
+                && !field.ty.basic_res().is_diag_item(cx, PhantomPinned)
             {
                 span_lint_hir_and_then(
                     cx,

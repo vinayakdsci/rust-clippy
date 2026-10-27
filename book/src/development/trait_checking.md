@@ -17,19 +17,18 @@ providing the `LateContext` (`cx`), our expression at hand, and
 the symbol of the trait in question:
 
 ```rust
-use clippy_utils::is_trait_method;
+use clippy_utils::sym;
+use clippy_utils::ty::implements_trait;
 use rustc_hir::Expr;
 use rustc_lint::{LateContext, LateLintPass};
-use rustc_span::symbol::sym;
 
 impl LateLintPass<'_> for CheckIteratorTraitLint {
     fn check_expr(&mut self, cx: &LateContext<'_>, expr: &Expr<'_>) {
-		let implements_iterator = cx.tcx.get_diagnostic_item(sym::Iterator).map_or(false, |id| {
-    		implements_trait(cx, cx.typeck_results().expr_ty(arg), id, &[])
-		});
-		if implements_iterator {
-			// [...]
-		}
+        let implements_iterator = (cx.tcx.get_diagnostic_item(sym::Iterator))
+            .is_some_and(|id| implements_trait(cx, cx.typeck_results().expr_ty(expr), id, &[]));
+        if implements_iterator {
+            // [...]
+        }
 
     }
 }
@@ -54,7 +53,7 @@ For instance, if we want to examine whether an expression `expr` implements
 we can check that the `Ty` of the `expr` implements the trait:
 
 ```rust
-use clippy_utils::implements_trait;
+use clippy_utils::ty::implements_trait;
 use rustc_hir::Expr;
 use rustc_lint::{LateContext, LateLintPass};
 
@@ -73,22 +72,25 @@ impl LateLintPass<'_> for CheckDropTraitLint {
 ## Using Type Path
 
 If neither diagnostic item nor a language item is available, we can use
-[`clippy_utils::paths`][paths] with the `match_trait_method` to determine trait
-implementation.
+[`clippy_utils::paths`][paths] to determine get a trait's `DefId`.
 
 > **Note**: This approach should be avoided if possible, the best thing to do would be to make a PR to [`rust-lang/rust`][rust] adding a diagnostic item.
 
-Below, we check if the given `expr` implements the `Iterator`'s trait method `cloned` :
+Below, we check if the given `expr` implements [`core::iter::Step`](https://doc.rust-lang.org/std/iter/trait.Step.html):
 
 ```rust
-use clippy_utils::{match_trait_method, paths};
+use clippy_utils::paths;
+use clippy_utils::ty::implements_trait;
 use rustc_hir::Expr;
 use rustc_lint::{LateContext, LateLintPass};
 
-impl LateLintPass<'_> for CheckTokioAsyncReadExtTrait {
+impl LateLintPass<'_> for CheckIterStep {
     fn check_expr(&mut self, cx: &LateContext<'_>, expr: &Expr<'_>) {
-        if match_trait_method(cx, expr, &paths::CORE_ITER_CLONED) {
-            println!("`expr` implements `CORE_ITER_CLONED` trait!");
+        let ty = cx.typeck_results().expr_ty(expr);
+        if let Some(trait_def_id) = paths::ITER_STEP.first(cx)
+            && implements_trait(cx, ty, trait_def_id, &[])
+        {
+            println!("`expr` implements the `core::iter::Step` trait!");
         }
     }
 }
@@ -123,8 +125,8 @@ The following code demonstrates how to do this:
 ```rust
 
 use rustc_middle::ty::Ty;
+use clippy_utils::sym;
 use clippy_utils::ty::implements_trait;
-use rustc_span::symbol::sym;
 
 let ty = todo!("Get the `Foo` type to check for a trait implementation");
 let borrow_id = cx.tcx.get_diagnostic_item(sym::Borrow).unwrap(); // avoid unwrap in real code
@@ -144,7 +146,7 @@ compiler to see if it indeed implements the trait we are interested in.
 [DefId]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_hir/def_id/struct.DefId.html
 [diagnostic_items]: https://rustc-dev-guide.rust-lang.org/diagnostics/diagnostic-items.html
 [lang_items]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_hir/lang_items/struct.LanguageItems.html
-[paths]: https://github.com/rust-lang/rust-clippy/blob/master/clippy_utils/src/paths.rs
+[paths]: https://github.com/rust-lang/rust-clippy/blob/HEAD/clippy_utils/src/paths.rs
 [rustc_dev_guide]: https://rustc-dev-guide.rust-lang.org/
 [symbol]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_span/symbol/struct.Symbol.html
 [symbol_index]: https://doc.rust-lang.org/beta/nightly-rustc/rustc_span/symbol/sym/index.html

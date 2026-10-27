@@ -1,4 +1,4 @@
-#![allow(unused_assignments, unused_mut, clippy::assign_op_pattern)]
+#![allow(clippy::assign_op_pattern)]
 #![warn(clippy::implicit_saturating_sub)]
 
 use std::cmp::PartialEq;
@@ -25,6 +25,7 @@ fn main() {
 
     // Lint
     if u_8 > 0 {
+        //~^ implicit_saturating_sub
         u_8 = u_8 - 1;
     }
 
@@ -32,6 +33,7 @@ fn main() {
         10 => {
             // Lint
             if u_8 > 0 {
+                //~^ implicit_saturating_sub
                 u_8 -= 1;
             }
         },
@@ -46,6 +48,7 @@ fn main() {
 
     // Lint
     if u_16 > 0 {
+        //~^ implicit_saturating_sub
         u_16 -= 1;
     }
 
@@ -56,6 +59,7 @@ fn main() {
 
     // Lint
     if u_32 != 0 {
+        //~^ implicit_saturating_sub
         u_32 -= 1;
     }
 
@@ -77,16 +81,19 @@ fn main() {
 
     // Lint
     if u_64 > 0 {
+        //~^ implicit_saturating_sub
         u_64 -= 1;
     }
 
     // Lint
     if 0 < u_64 {
+        //~^ implicit_saturating_sub
         u_64 -= 1;
     }
 
     // Lint
     if 0 != u_64 {
+        //~^ implicit_saturating_sub
         u_64 -= 1;
     }
 
@@ -108,6 +115,7 @@ fn main() {
 
     // Lint
     if u_usize > 0 {
+        //~^ implicit_saturating_sub
         u_usize -= 1;
     }
 
@@ -120,21 +128,25 @@ fn main() {
 
     // Lint
     if i_8 > i8::MIN {
+        //~^ implicit_saturating_sub
         i_8 -= 1;
     }
 
     // Lint
     if i_8 > i8::MIN {
+        //~^ implicit_saturating_sub
         i_8 -= 1;
     }
 
     // Lint
     if i_8 != i8::MIN {
+        //~^ implicit_saturating_sub
         i_8 -= 1;
     }
 
     // Lint
     if i_8 != i8::MIN {
+        //~^ implicit_saturating_sub
         i_8 -= 1;
     }
 
@@ -145,21 +157,25 @@ fn main() {
 
     // Lint
     if i_16 > i16::MIN {
+        //~^ implicit_saturating_sub
         i_16 -= 1;
     }
 
     // Lint
     if i_16 > i16::MIN {
+        //~^ implicit_saturating_sub
         i_16 -= 1;
     }
 
     // Lint
     if i_16 != i16::MIN {
+        //~^ implicit_saturating_sub
         i_16 -= 1;
     }
 
     // Lint
     if i_16 != i16::MIN {
+        //~^ implicit_saturating_sub
         i_16 -= 1;
     }
 
@@ -170,21 +186,25 @@ fn main() {
 
     // Lint
     if i_32 > i32::MIN {
+        //~^ implicit_saturating_sub
         i_32 -= 1;
     }
 
     // Lint
     if i_32 > i32::MIN {
+        //~^ implicit_saturating_sub
         i_32 -= 1;
     }
 
     // Lint
     if i_32 != i32::MIN {
+        //~^ implicit_saturating_sub
         i_32 -= 1;
     }
 
     // Lint
     if i_32 != i32::MIN {
+        //~^ implicit_saturating_sub
         i_32 -= 1;
     }
 
@@ -195,16 +215,19 @@ fn main() {
 
     // Lint
     if i64::MIN < i_64 {
+        //~^ implicit_saturating_sub
         i_64 -= 1;
     }
 
     // Lint
     if i64::MIN != i_64 {
+        //~^ implicit_saturating_sub
         i_64 -= 1;
     }
 
     // Lint
     if i64::MIN < i_64 {
+        //~^ implicit_saturating_sub
         i_64 -= 1;
     }
 
@@ -230,18 +253,18 @@ fn main() {
     let mut m = Mock;
     let mut u_32 = 3000;
     let a = 200;
-    let mut _b = 8;
+    let mut b = 8;
 
     if m != 0 {
         m -= 1;
     }
 
     if a > 0 {
-        _b -= 1;
+        b -= 1;
     }
 
     if 0 > a {
-        _b -= 1;
+        b -= 1;
     }
 
     if u_32 > 0 {
@@ -260,4 +283,103 @@ fn main() {
     } else if u_32 > 0 {
         u_32 -= 1;
     }
+
+    let result = if a < b {
+        println!("we shouldn't remove this");
+        0
+    } else {
+        a - b
+    };
+}
+
+fn regression_13524(a: usize, b: usize, c: bool) -> usize {
+    if c {
+        123
+    } else if a >= b {
+        //~^ implicit_saturating_sub
+        0
+    } else {
+        b - a
+    }
+}
+
+fn with_side_effect(a: u64) -> u64 {
+    println!("a = {a}");
+    a
+}
+
+fn arbitrary_expression() {
+    let (a, b) = (15u64, 20u64);
+
+    let _ = if a * 2 > b { a * 2 - b } else { 0 };
+    //~^ implicit_saturating_sub
+
+    let _ = if a > b * 2 { a - b * 2 } else { 0 };
+    //~^ implicit_saturating_sub
+
+    let _ = if a < b * 2 { 0 } else { a - b * 2 };
+    //~^ implicit_saturating_sub
+
+    let _ = if with_side_effect(a) > a {
+        with_side_effect(a) - a
+    } else {
+        0
+    };
+}
+
+fn issue16307() {
+    let x: u8 = 100;
+    let y = if x >= 100 { 0 } else { 100 - x };
+    //~^ implicit_saturating_sub
+
+    println!("{y}");
+}
+
+fn wrongly_unmangled_macros() {
+    macro_rules! test_big {
+        ($val:expr) => {
+            ($val * 2 + 1)
+        };
+    }
+
+    macro_rules! test_little {
+        ($val:expr) => {
+            ($val * 2 + 0)
+        };
+    }
+
+    let a = 15u64;
+    let b = 20u64;
+    let _ = if test_big!(a) > test_little!(b) {
+        //~^ implicit_saturating_sub
+        test_big!(a) - test_little!(b)
+    } else {
+        0
+    };
+}
+
+#[clippy::msrv = "1.46.0"]
+pub const fn const_msrv_too_low(mut x: u32) -> u32 {
+    if x != 0 {
+        x -= 1;
+    }
+    x
+}
+
+#[clippy::msrv = "1.47.0"]
+pub const fn const_msrv_ok(mut x: u32) -> u32 {
+    if x != 0 {
+        //~^ implicit_saturating_sub
+        x -= 1;
+    }
+    x
+}
+
+#[clippy::msrv = "1.46.0"]
+pub fn nonconst_msrv_low(mut x: u32) -> u32 {
+    if x != 0 {
+        //~^ implicit_saturating_sub
+        x -= 1;
+    }
+    x
 }

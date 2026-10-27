@@ -1,9 +1,9 @@
 #![warn(clippy::single_component_path_imports)]
-#![allow(unused_imports)]
 
 use core;
 
 use regex;
+//~^ single_component_path_imports
 
 use serde as edres;
 
@@ -30,13 +30,12 @@ fn main() {
 
 mod hello_mod {
     use regex;
-    #[allow(dead_code)]
+    //~^ single_component_path_imports
     fn hello_mod() {}
 }
 
 mod hi_mod {
     use self::regex::{Regex, RegexSet};
     use regex;
-    #[allow(dead_code)]
     fn hi_mod() {}
 }

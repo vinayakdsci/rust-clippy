@@ -1,24 +1,64 @@
 //! Utils for extracting, inspecting or transforming source code
 
-#![allow(clippy::module_name_repetitions)]
+#![expect(clippy::module_name_repetitions)]
+
+use std::sync::Arc;
 
 use rustc_ast::{LitKind, StrStyle};
-use rustc_data_structures::sync::Lrc;
 use rustc_errors::Applicability;
 use rustc_hir::{BlockCheckMode, Expr, ExprKind, UnsafeSource};
-use rustc_lint::{LateContext, LintContext};
+use rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, tokenize};
+use rustc_lint::{EarlyContext, LateContext};
+use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
-use rustc_span::source_map::{original_sp, SourceMap};
+use rustc_span::source_map::{SourceMap, original_sp};
 use rustc_span::{
-    hygiene, BytePos, FileNameDisplayPreference, Pos, SourceFile, SourceFileAndLine, Span, SpanData, SyntaxContext,
-    DUMMY_SP,
+    BytePos, DUMMY_SP, DesugaringKind, Pos as _, RelativeBytePos, SourceFile, SourceFileAndLine, Span, SpanData,
+    SyntaxContext, hygiene,
 };
 use std::borrow::Cow;
 use std::fmt;
-use std::ops::Range;
+use std::ops::{Deref, Index, Range};
+
+/// Types from which a `SourceMap` can be obtained.
+pub trait HasSourceMap<'sm>: Copy {
+    #[must_use]
+    fn source_map(self) -> &'sm SourceMap;
+}
+impl<'sm> HasSourceMap<'sm> for &'sm SourceMap {
+    #[inline]
+    fn source_map(self) -> &'sm SourceMap {
+        self
+    }
+}
+impl<'sm> HasSourceMap<'sm> for &'sm Session {
+    #[inline]
+    fn source_map(self) -> &'sm SourceMap {
+        self.early_sess.source_map()
+    }
+}
+impl<'sm> HasSourceMap<'sm> for TyCtxt<'sm> {
+    #[inline]
+    fn source_map(self) -> &'sm SourceMap {
+        self.sess.source_map()
+    }
+}
+impl<'sm> HasSourceMap<'sm> for &'sm EarlyContext<'_> {
+    #[inline]
+    fn source_map(self) -> &'sm SourceMap {
+        ::rustc_lint::LintContext::sess(self).source_map()
+    }
+}
+impl<'sm> HasSourceMap<'sm> for &LateContext<'sm> {
+    #[inline]
+    fn source_map(self) -> &'sm SourceMap {
+        self.tcx.sess.source_map()
+    }
+}
 
 /// Conversion of a value into the range portion of a `Span`.
 pub trait SpanRange: Sized {
+    /// Converts `self` into the range portion of a [`Span`].
     fn into_range(self) -> Range<BytePos>;
 }
 impl SpanRange for Span {
@@ -40,7 +80,9 @@ impl SpanRange for Range<BytePos> {
 
 /// Conversion of a value into a `Span`
 pub trait IntoSpan: Sized {
+    /// Converts `self` into a [`Span`].
     fn into_span(self) -> Span;
+    /// Converts `self` into a [`Span`], with [context](SyntaxContext).
     fn with_ctxt(self, ctxt: SyntaxContext) -> Span;
 }
 impl IntoSpan for Span {
@@ -68,33 +110,41 @@ impl IntoSpan for Range<BytePos> {
     }
 }
 
-pub trait SpanRangeExt: SpanRange {
+/// Extension methods for span-like types (anything implementing [`SpanRange`]) that need access
+/// to the underlying source text via a [`HasSourceMap`].
+pub trait SpanExt: SpanRange {
+    /// Attempts to get a handle to the source text. Returns `None` if either the span is malformed,
+    /// or the source text is not accessible.
+    fn get_text<'sm>(self, sm: impl HasSourceMap<'sm>) -> Option<SourceText> {
+        get_source_range(sm.source_map(), self.into_range()).and_then(SourceText::new)
+    }
+
     /// Gets the source file, and range in the file, of the given span. Returns `None` if the span
     /// extends through multiple files, or is malformed.
-    fn get_source_text(self, cx: &impl LintContext) -> Option<SourceFileRange> {
-        get_source_text(cx.sess().source_map(), self.into_range())
+    fn get_source_range<'sm>(self, sm: impl HasSourceMap<'sm>) -> Option<SourceFileRange> {
+        get_source_range(sm.source_map(), self.into_range())
     }
 
     /// Calls the given function with the source text referenced and returns the value. Returns
     /// `None` if the source text cannot be retrieved.
-    fn with_source_text<T>(self, cx: &impl LintContext, f: impl for<'a> FnOnce(&'a str) -> T) -> Option<T> {
-        with_source_text(cx.sess().source_map(), self.into_range(), f)
+    fn with_source_text<'sm, T>(self, sm: impl HasSourceMap<'sm>, f: impl for<'a> FnOnce(&'a str) -> T) -> Option<T> {
+        with_source_text(sm.source_map(), self.into_range(), f)
     }
 
     /// Checks if the referenced source text satisfies the given predicate. Returns `false` if the
     /// source text cannot be retrieved.
-    fn check_source_text(self, cx: &impl LintContext, pred: impl for<'a> FnOnce(&'a str) -> bool) -> bool {
-        self.with_source_text(cx, pred).unwrap_or(false)
+    fn check_text<'sm>(self, sm: impl HasSourceMap<'sm>, pred: impl for<'a> FnOnce(&'a str) -> bool) -> bool {
+        self.with_source_text(sm, pred).unwrap_or(false)
     }
 
     /// Calls the given function with the both the text of the source file and the referenced range,
     /// and returns the value. Returns `None` if the source text cannot be retrieved.
-    fn with_source_text_and_range<T>(
+    fn with_source_text_and_range<'sm, T>(
         self,
-        cx: &impl LintContext,
+        sm: impl HasSourceMap<'sm>,
         f: impl for<'a> FnOnce(&'a str, Range<usize>) -> T,
     ) -> Option<T> {
-        with_source_text_and_range(cx.sess().source_map(), self.into_range(), f)
+        with_source_text_and_range(sm.source_map(), self.into_range(), f)
     }
 
     /// Calls the given function with the both the text of the source file and the referenced range,
@@ -102,49 +152,104 @@ pub trait SpanRangeExt: SpanRange {
     /// retrieved, or no result is returned.
     ///
     /// The new range must reside within the same source file.
-    fn map_range(
+    fn map_range<'sm>(
         self,
-        cx: &impl LintContext,
-        f: impl for<'a> FnOnce(&'a str, Range<usize>) -> Option<Range<usize>>,
+        sm: impl HasSourceMap<'sm>,
+        f: impl for<'a> FnOnce(&'a SourceFile, &'a str, Range<usize>) -> Option<Range<usize>>,
     ) -> Option<Range<BytePos>> {
-        map_range(cx.sess().source_map(), self.into_range(), f)
+        map_range(sm.source_map(), self.into_range(), f)
     }
 
     /// Extends the range to include all preceding whitespace characters.
-    fn with_leading_whitespace(self, cx: &impl LintContext) -> Range<BytePos> {
-        with_leading_whitespace(cx.sess().source_map(), self.into_range())
+    ///
+    /// The range will not be expanded if it would cross a line boundary, the line the range would
+    /// be extended to ends with a line comment and the text after the range contains a
+    /// non-whitespace character on the same line. e.g.
+    ///
+    /// ```ignore
+    /// ( // Some comment
+    /// foo)
+    /// ```
+    ///
+    /// When the range points to `foo`, suggesting to remove the range after it's been extended will
+    /// cause the `)` to be placed inside the line comment as `( // Some comment)`.
+    fn with_leading_whitespace<'sm>(self, sm: impl HasSourceMap<'sm>) -> Range<BytePos> {
+        with_leading_whitespace(sm.source_map(), self.into_range())
     }
 
     /// Trims the leading whitespace from the range.
-    fn trim_start(self, cx: &impl LintContext) -> Range<BytePos> {
-        trim_start(cx.sess().source_map(), self.into_range())
-    }
-
-    /// Writes the referenced source text to the given writer. Will return `Err` if the source text
-    /// could not be retrieved.
-    fn write_source_text_to(self, cx: &impl LintContext, dst: &mut impl fmt::Write) -> fmt::Result {
-        write_source_text_to(cx.sess().source_map(), self.into_range(), dst)
-    }
-
-    /// Extracts the referenced source text as an owned string.
-    fn source_text_to_string(self, cx: &impl LintContext) -> Option<String> {
-        self.with_source_text(cx, ToOwned::to_owned)
+    fn trim_start<'sm>(self, sm: impl HasSourceMap<'sm>) -> Range<BytePos> {
+        trim_start(sm.source_map(), self.into_range())
     }
 }
-impl<T: SpanRange> SpanRangeExt for T {}
+impl<T: SpanRange> SpanExt for T {}
 
-fn get_source_text(sm: &SourceMap, sp: Range<BytePos>) -> Option<SourceFileRange> {
+/// Handle to a range of text in a source file.
+pub struct SourceText(SourceFileRange);
+impl SourceText {
+    /// Takes ownership of the source file handle if the source text is accessible.
+    pub fn new(text: SourceFileRange) -> Option<Self> {
+        if text.as_str().is_some() {
+            Some(Self(text))
+        } else {
+            None
+        }
+    }
+
+    /// Gets the source text.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str().unwrap()
+    }
+
+    /// Converts this into an owned string.
+    pub fn to_owned(&self) -> String {
+        self.as_str().to_owned()
+    }
+}
+impl Deref for SourceText {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+impl AsRef<str> for SourceText {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+impl<T> Index<T> for SourceText
+where
+    str: Index<T>,
+{
+    type Output = <str as Index<T>>::Output;
+    fn index(&self, idx: T) -> &Self::Output {
+        &self.as_str()[idx]
+    }
+}
+impl fmt::Display for SourceText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().fmt(f)
+    }
+}
+impl fmt::Debug for SourceText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().fmt(f)
+    }
+}
+
+fn get_source_range(sm: &SourceMap, sp: Range<BytePos>) -> Option<SourceFileRange> {
     let start = sm.lookup_byte_offset(sp.start);
     let end = sm.lookup_byte_offset(sp.end);
-    if !Lrc::ptr_eq(&start.sf, &end.sf) || start.pos > end.pos {
+    if !Arc::ptr_eq(&start.sf, &end.sf) || start.pos > end.pos {
         return None;
     }
+    sm.ensure_source_file_source_present(&start.sf);
     let range = start.pos.to_usize()..end.pos.to_usize();
     Some(SourceFileRange { sf: start.sf, range })
 }
 
 fn with_source_text<T>(sm: &SourceMap, sp: Range<BytePos>, f: impl for<'a> FnOnce(&'a str) -> T) -> Option<T> {
-    if let Some(src) = get_source_text(sm, sp)
+    if let Some(src) = get_source_range(sm, sp)
         && let Some(src) = src.as_str()
     {
         Some(f(src))
@@ -158,7 +263,7 @@ fn with_source_text_and_range<T>(
     sp: Range<BytePos>,
     f: impl for<'a> FnOnce(&'a str, Range<usize>) -> T,
 ) -> Option<T> {
-    if let Some(src) = get_source_text(sm, sp)
+    if let Some(src) = get_source_range(sm, sp)
         && let Some(text) = &src.sf.src
     {
         Some(f(text, src.range))
@@ -171,16 +276,16 @@ fn with_source_text_and_range<T>(
 fn map_range(
     sm: &SourceMap,
     sp: Range<BytePos>,
-    f: impl for<'a> FnOnce(&'a str, Range<usize>) -> Option<Range<usize>>,
+    f: impl for<'a> FnOnce(&'a SourceFile, &'a str, Range<usize>) -> Option<Range<usize>>,
 ) -> Option<Range<BytePos>> {
-    if let Some(src) = get_source_text(sm, sp.clone())
+    if let Some(src) = get_source_range(sm, sp.clone())
         && let Some(text) = &src.sf.src
-        && let Some(range) = f(text, src.range.clone())
+        && let Some(range) = f(&src.sf, text, src.range.clone())
     {
         debug_assert!(
             range.start <= text.len() && range.end <= text.len(),
             "Range `{range:?}` is outside the source file (file `{}`, length `{}`)",
-            src.sf.name.display(FileNameDisplayPreference::Local),
+            src.sf.name.prefer_local_unconditionally(),
             text.len(),
         );
         debug_assert!(range.start <= range.end, "Range `{range:?}` has overlapping bounds");
@@ -192,55 +297,96 @@ fn map_range(
     }
 }
 
+fn ends_with_line_comment_or_broken(text: &str) -> bool {
+    let Some(last) = tokenize(text, FrontmatterAllowed::No).last() else {
+        return false;
+    };
+    match last.kind {
+        // Will give the wrong result on text like `" // "` where the first quote ends a string
+        // started earlier. The only workaround is to lex the whole file which we don't really want
+        // to do.
+        TokenKind::LineComment { .. } | TokenKind::BlockComment { terminated: false, .. } => true,
+        TokenKind::Literal { kind, .. } => matches!(
+            kind,
+            LiteralKind::Byte { terminated: false }
+                | LiteralKind::ByteStr { terminated: false }
+                | LiteralKind::CStr { terminated: false }
+                | LiteralKind::Char { terminated: false }
+                | LiteralKind::RawByteStr { n_hashes: None }
+                | LiteralKind::RawCStr { n_hashes: None }
+                | LiteralKind::RawStr { n_hashes: None }
+        ),
+        _ => false,
+    }
+}
+
+fn with_leading_whitespace_inner(lines: &[RelativeBytePos], src: &str, range: Range<usize>) -> Option<usize> {
+    debug_assert!(lines.is_empty() || lines[0].to_u32() == 0);
+
+    let start = src.get(..range.start)?.trim_end();
+    let next_line = lines.partition_point(|&pos| pos.to_usize() <= start.len());
+    if let Some(line_end) = lines.get(next_line)
+        && line_end.to_usize() <= range.start
+        && let prev_start = lines.get(next_line - 1).map_or(0, |&x| x.to_usize())
+        && ends_with_line_comment_or_broken(&start[prev_start..])
+        && let next_line = lines.partition_point(|&pos| pos.to_usize() < range.end)
+        && let next_start = lines.get(next_line).map_or(src.len(), |&x| x.to_usize())
+        && tokenize(src.get(range.end..next_start)?, FrontmatterAllowed::No)
+            .any(|t| !matches!(t.kind, TokenKind::Whitespace))
+    {
+        Some(range.start)
+    } else {
+        Some(start.len())
+    }
+}
+
 fn with_leading_whitespace(sm: &SourceMap, sp: Range<BytePos>) -> Range<BytePos> {
-    map_range(sm, sp.clone(), |src, range| {
-        Some(src.get(..range.start)?.trim_end().len()..range.end)
+    map_range(sm, sp.clone(), |sf, src, range| {
+        Some(with_leading_whitespace_inner(sf.lines(), src, range.clone())?..range.end)
     })
     .unwrap_or(sp)
 }
 
 fn trim_start(sm: &SourceMap, sp: Range<BytePos>) -> Range<BytePos> {
-    map_range(sm, sp.clone(), |src, range| {
+    map_range(sm, sp.clone(), |_, src, range| {
         let src = src.get(range.clone())?;
         Some(range.start + (src.len() - src.trim_start().len())..range.end)
     })
     .unwrap_or(sp)
 }
 
-fn write_source_text_to(sm: &SourceMap, sp: Range<BytePos>, dst: &mut impl fmt::Write) -> fmt::Result {
-    match with_source_text(sm, sp, |src| dst.write_str(src)) {
-        Some(x) => x,
-        None => Err(fmt::Error),
-    }
-}
-
+/// A range within a specific [source file](SourceFile).
 pub struct SourceFileRange {
-    pub sf: Lrc<SourceFile>,
+    /// The [source file](SourceFile) referred to by this range
+    pub sf: Arc<SourceFile>,
+    /// The range within the associated [source file](SourceFile)
     pub range: Range<usize>,
 }
 impl SourceFileRange {
     /// Attempts to get the text from the source file. This can fail if the source text isn't
     /// loaded.
     pub fn as_str(&self) -> Option<&str> {
-        self.sf.src.as_ref().and_then(|x| x.get(self.range.clone()))
+        (self.sf.src.as_ref().map(|src| src.as_str()))
+            .or_else(|| self.sf.external_src.get()?.get_source())
+            .and_then(|x| x.get(self.range.clone()))
     }
 }
 
-/// Like `snippet_block`, but add braces if the expr is not an `ExprKind::Block`.
-pub fn expr_block<T: LintContext>(
-    cx: &T,
+/// Like [`snippet_block`], but add braces if the expr is not an `ExprKind::Block` with no label.
+pub fn expr_block<'sm>(
+    sm: impl HasSourceMap<'sm>,
     expr: &Expr<'_>,
     outer: SyntaxContext,
     default: &str,
     indent_relative_to: Option<Span>,
     app: &mut Applicability,
 ) -> String {
-    let (code, from_macro) = snippet_block_with_context(cx, expr.span, outer, default, indent_relative_to, app);
+    let (code, from_macro) = snippet_block_with_context(sm, expr.span, outer, default, indent_relative_to, app);
     if !from_macro
-        && let ExprKind::Block(block, _) = expr.kind
+        && let ExprKind::Block(block, None) = expr.kind
         && block.rules != BlockCheckMode::UnsafeBlock(UnsafeSource::UserProvided)
     {
-        format!("{code}")
+        code
     } else {
         // FIXME: add extra indent for the unsafe blocks:
         //     original code:   unsafe { ... }
@@ -260,13 +406,13 @@ pub fn expr_block<T: LintContext>(
 ///     let x = ();
 /// //  ^^^^^^^^^^
 /// ```
-pub fn first_line_of_span<T: LintContext>(cx: &T, span: Span) -> Span {
-    first_char_in_first_line(cx, span).map_or(span, |first_char_pos| span.with_lo(first_char_pos))
+pub fn first_line_of_span<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> Span {
+    first_char_in_first_line(sm, span).map_or(span, |first_char_pos| span.with_lo(first_char_pos))
 }
 
-fn first_char_in_first_line<T: LintContext>(cx: &T, span: Span) -> Option<BytePos> {
-    let line_span = line_span(cx, span);
-    snippet_opt(cx, line_span).and_then(|snip| {
+fn first_char_in_first_line<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> Option<BytePos> {
+    let line_span = line_span(sm, span);
+    snippet_opt(sm, line_span).and_then(|snip| {
         snip.find(|c: char| !c.is_whitespace())
             .map(|pos| line_span.lo() + BytePos::from_usize(pos))
     })
@@ -281,9 +427,9 @@ fn first_char_in_first_line<T: LintContext>(cx: &T, span: Span) -> Option<BytePo
 ///        let x = ();
 /// // ^^^^^^^^^^^^^^
 /// ```
-fn line_span<T: LintContext>(cx: &T, span: Span) -> Span {
+fn line_span<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> Span {
     let span = original_sp(span, DUMMY_SP);
-    let SourceFileAndLine { sf, line } = cx.sess().source_map().lookup_line(span.lo()).unwrap();
+    let SourceFileAndLine { sf, line } = sm.source_map().lookup_line(span.lo()).unwrap();
     let line_start = sf.lines()[line];
     let line_start = sf.absolute_position(line_start);
     span.with_lo(line_start)
@@ -297,29 +443,30 @@ fn line_span<T: LintContext>(cx: &T, span: Span) -> Span {
 ///     let x = ();
 /// //          ^^ -- will return 4
 /// ```
-pub fn indent_of<T: LintContext>(cx: &T, span: Span) -> Option<usize> {
-    snippet_opt(cx, line_span(cx, span)).and_then(|snip| snip.find(|c: char| !c.is_whitespace()))
+pub fn indent_of<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> Option<usize> {
+    snippet_opt(sm, line_span(sm, span)).and_then(|snip| snip.find(|c: char| !c.is_whitespace()))
 }
 
 /// Gets a snippet of the indentation of the line of a span
-pub fn snippet_indent<T: LintContext>(cx: &T, span: Span) -> Option<String> {
-    snippet_opt(cx, line_span(cx, span)).map(|mut s| {
+pub fn snippet_indent<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> Option<String> {
+    snippet_opt(sm, line_span(sm, span)).map(|mut s| {
         let len = s.len() - s.trim_start().len();
         s.truncate(len);
         s
     })
 }
 
+/// Checks whether the code snippet referred to by the given [`Span`] is present in the source code.
 // If the snippet is empty, it's an attribute that was inserted during macro
 // expansion and we want to ignore those, because they could come from external
 // sources that the user has no control over.
 // For some reason these attributes don't have any expansion info on them, so
 // we have to check it this way until there is a better way.
-pub fn is_present_in_source<T: LintContext>(cx: &T, span: Span) -> bool {
-    if let Some(snippet) = snippet_opt(cx, span) {
-        if snippet.is_empty() {
-            return false;
-        }
+pub fn is_present_in_source<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> bool {
+    if let Some(snippet) = snippet_opt(sm, span)
+        && snippet.is_empty()
+    {
+        return false;
     }
     true
 }
@@ -340,11 +487,11 @@ pub fn position_before_rarrow(s: &str) -> Option<usize> {
         let mut rpos = rpos;
         let chars: Vec<char> = s.chars().collect();
         while rpos > 1 {
-            if let Some(c) = chars.get(rpos - 1) {
-                if c.is_whitespace() {
-                    rpos -= 1;
-                    continue;
-                }
+            if let Some(c) = chars.get(rpos - 1)
+                && c.is_whitespace()
+            {
+                rpos -= 1;
+                continue;
             }
             break;
         }
@@ -353,11 +500,10 @@ pub fn position_before_rarrow(s: &str) -> Option<usize> {
 }
 
 /// Reindent a multiline string with possibility of ignoring the first line.
-#[expect(clippy::needless_pass_by_value)]
-pub fn reindent_multiline(s: Cow<'_, str>, ignore_first: bool, indent: Option<usize>) -> Cow<'_, str> {
-    let s_space = reindent_multiline_inner(&s, ignore_first, indent, ' ');
+pub fn reindent_multiline(s: &str, ignore_first: bool, indent: Option<usize>) -> String {
+    let s_space = reindent_multiline_inner(s, ignore_first, indent, ' ');
     let s_tab = reindent_multiline_inner(&s_space, ignore_first, indent, '\t');
-    reindent_multiline_inner(&s_tab, ignore_first, indent, ' ').into()
+    reindent_multiline_inner(&s_tab, ignore_first, indent, ' ')
 }
 
 fn reindent_multiline_inner(s: &str, ignore_first: bool, indent: Option<usize>, ch: char) -> String {
@@ -393,8 +539,10 @@ fn reindent_multiline_inner(s: &str, ignore_first: bool, indent: Option<usize>, 
 /// Converts a span to a code snippet if available, otherwise returns the default.
 ///
 /// This is useful if you want to provide suggestions for your lint or more generally, if you want
-/// to convert a given `Span` to a `str`. To create suggestions consider using
-/// [`snippet_with_applicability`] to ensure that the applicability stays correct.
+/// to convert a given `Span` to a `str`.
+///
+/// To create suggestions consider using [`snippet_with_applicability`] to ensure that the
+/// applicability stays correct.
 ///
 /// # Example
 /// ```rust,ignore
@@ -403,31 +551,33 @@ fn reindent_multiline_inner(s: &str, ignore_first: bool, indent: Option<usize>, 
 /// //  ^^^^^   ^^^^^^^^^^
 /// //  span1   span2
 ///
-/// // The snipped call would return the corresponding code snippet
+/// // The snippet call would return the corresponding code snippet
 /// snippet(cx, span1, "..") // -> "value"
 /// snippet(cx, span2, "..") // -> "Vec::new()"
 /// ```
-pub fn snippet<'a, T: LintContext>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
-    snippet_opt(cx, span).map_or_else(|| Cow::Borrowed(default), From::from)
+pub fn snippet<'a, 'sm>(sm: impl HasSourceMap<'sm>, span: Span, default: &'a str) -> Cow<'a, str> {
+    snippet_opt(sm, span).map_or(Cow::Borrowed(default), From::from)
 }
 
 /// Same as [`snippet`], but it adapts the applicability level by following rules:
 ///
 /// - Applicability level `Unspecified` will never be changed.
 /// - If the span is inside a macro, change the applicability level to `MaybeIncorrect`.
-/// - If the default value is used and the applicability level is `MachineApplicable`, change it to
-///   `HasPlaceholders`
-pub fn snippet_with_applicability<'a, T: LintContext>(
-    cx: &T,
+/// - If the default value is used and the applicability level is `MachineApplicable`, change it to `HasPlaceholders`
+///
+/// If the span might realistically contain a macro call (e.g. `vec![]`), consider using
+/// [`snippet_with_context`] instead.
+pub fn snippet_with_applicability<'a, 'sm>(
+    sm: impl HasSourceMap<'sm>,
     span: Span,
     default: &'a str,
     applicability: &mut Applicability,
 ) -> Cow<'a, str> {
-    snippet_with_applicability_sess(cx.sess(), span, default, applicability)
+    snippet_with_applicability_sm(sm.source_map(), span, default, applicability)
 }
 
-fn snippet_with_applicability_sess<'a>(
-    sess: &Session,
+fn snippet_with_applicability_sm<'a>(
+    sm: &SourceMap,
     span: Span,
     default: &'a str,
     applicability: &mut Applicability,
@@ -435,24 +585,19 @@ fn snippet_with_applicability_sess<'a>(
     if *applicability != Applicability::Unspecified && span.from_expansion() {
         *applicability = Applicability::MaybeIncorrect;
     }
-    snippet_opt_sess(sess, span).map_or_else(
-        || {
-            if *applicability == Applicability::MachineApplicable {
-                *applicability = Applicability::HasPlaceholders;
-            }
-            Cow::Borrowed(default)
-        },
-        From::from,
-    )
+    if let Some(t) = snippet_opt(sm, span) {
+        Cow::Owned(t)
+    } else {
+        if *applicability == Applicability::MachineApplicable {
+            *applicability = Applicability::HasPlaceholders;
+        }
+        Cow::Borrowed(default)
+    }
 }
 
 /// Converts a span to a code snippet. Returns `None` if not available.
-pub fn snippet_opt(cx: &impl LintContext, span: Span) -> Option<String> {
-    snippet_opt_sess(cx.sess(), span)
-}
-
-fn snippet_opt_sess(sess: &Session, span: Span) -> Option<String> {
-    sess.source_map().span_to_snippet(span).ok()
+pub fn snippet_opt<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> Option<String> {
+    sm.source_map().span_to_snippet(span).ok()
 }
 
 /// Converts a span (from a block) to a code snippet if available, otherwise use default.
@@ -489,70 +634,77 @@ fn snippet_opt_sess(sess: &Session, span: Span) -> Option<String> {
 ///     } // aligned with `if`
 /// ```
 /// Note that the first line of the snippet always has 0 indentation.
-pub fn snippet_block<'a, T: LintContext>(
-    cx: &T,
+pub fn snippet_block<'sm>(
+    sm: impl HasSourceMap<'sm>,
     span: Span,
-    default: &'a str,
+    default: &str,
     indent_relative_to: Option<Span>,
-) -> Cow<'a, str> {
-    let snip = snippet(cx, span, default);
-    let indent = indent_relative_to.and_then(|s| indent_of(cx, s));
-    reindent_multiline(snip, true, indent)
+) -> String {
+    let snip = snippet(sm, span, default);
+    let indent = indent_relative_to.and_then(|s| indent_of(sm, s));
+    reindent_multiline(&snip, true, indent)
 }
 
-/// Same as `snippet_block`, but adapts the applicability level by the rules of
-/// `snippet_with_applicability`.
-pub fn snippet_block_with_applicability<'a>(
-    cx: &impl LintContext,
+/// Same as [`snippet_block`], but adapts the applicability level by the rules of
+/// [`snippet_with_applicability`].
+pub fn snippet_block_with_applicability<'sm>(
+    sm: impl HasSourceMap<'sm>,
     span: Span,
-    default: &'a str,
+    default: &str,
     indent_relative_to: Option<Span>,
     applicability: &mut Applicability,
-) -> Cow<'a, str> {
-    let snip = snippet_with_applicability(cx, span, default, applicability);
-    let indent = indent_relative_to.and_then(|s| indent_of(cx, s));
-    reindent_multiline(snip, true, indent)
+) -> String {
+    let snip = snippet_with_applicability(sm, span, default, applicability);
+    let indent = indent_relative_to.and_then(|s| indent_of(sm, s));
+    reindent_multiline(&snip, true, indent)
 }
 
-pub fn snippet_block_with_context<'a>(
-    cx: &impl LintContext,
+/// Combination of [`snippet_block`] and [`snippet_with_context`].
+pub fn snippet_block_with_context<'sm>(
+    sm: impl HasSourceMap<'sm>,
     span: Span,
     outer: SyntaxContext,
-    default: &'a str,
+    default: &str,
     indent_relative_to: Option<Span>,
     app: &mut Applicability,
-) -> (Cow<'a, str>, bool) {
-    let (snip, from_macro) = snippet_with_context(cx, span, outer, default, app);
-    let indent = indent_relative_to.and_then(|s| indent_of(cx, s));
-    (reindent_multiline(snip, true, indent), from_macro)
+) -> (String, bool) {
+    let (snip, from_macro) = snippet_with_context(sm, span, outer, default, app);
+    let indent = indent_relative_to.and_then(|s| indent_of(sm, s));
+    (reindent_multiline(&snip, true, indent), from_macro)
 }
 
-/// Same as `snippet_with_applicability`, but first walks the span up to the given context. This
-/// will result in the macro call, rather than the expansion, if the span is from a child context.
-/// If the span is not from a child context, it will be used directly instead.
+/// Same as [`snippet_with_applicability`], but first walks the span up to the given context.
+///
+/// This will result in the macro call, rather than the expansion, if the span is from a child
+/// context. If the span is not from a child context, it will be used directly instead.
 ///
 /// e.g. Given the expression `&vec![]`, getting a snippet from the span for `vec![]` as a HIR node
 /// would result in `box []`. If given the context of the address of expression, this function will
 /// correctly get a snippet of `vec![]`.
 ///
 /// This will also return whether or not the snippet is a macro call.
-pub fn snippet_with_context<'a>(
-    cx: &impl LintContext,
+pub fn snippet_with_context<'a, 'sm>(
+    sm: impl HasSourceMap<'sm>,
     span: Span,
     outer: SyntaxContext,
     default: &'a str,
     applicability: &mut Applicability,
 ) -> (Cow<'a, str>, bool) {
-    snippet_with_context_sess(cx.sess(), span, outer, default, applicability)
+    snippet_with_context_sm(sm.source_map(), span, outer, default, applicability)
 }
 
-fn snippet_with_context_sess<'a>(
-    sess: &Session,
+fn snippet_with_context_sm<'a>(
+    sm: &SourceMap,
     span: Span,
     outer: SyntaxContext,
     default: &'a str,
     applicability: &mut Applicability,
 ) -> (Cow<'a, str>, bool) {
+    // If it is just range desugaring, use the desugaring span since it may include parenthesis.
+    if span.desugaring_kind() == Some(DesugaringKind::RangeExpr) && span.parent_callsite().unwrap().ctxt() == outer {
+        return (snippet_with_applicability_sm(sm, span, default, applicability), false);
+    }
+
     let (span, is_macro_call) = walk_span_to_context(span, outer).map_or_else(
         || {
             // The span is from a macro argument, and the outer context is the macro using the argument
@@ -566,15 +718,16 @@ fn snippet_with_context_sess<'a>(
     );
 
     (
-        snippet_with_applicability_sess(sess, span, default, applicability),
+        snippet_with_applicability_sm(sm, span, default, applicability),
         is_macro_call,
     )
 }
 
 /// Walks the span up to the target context, thereby returning the macro call site if the span is
-/// inside a macro expansion, or the original span if it is not. Note this will return `None` in the
-/// case of the span being in a macro expansion, but the target context is from expanding a macro
-/// argument.
+/// inside a macro expansion, or the original span if it is not.
+///
+/// Note this will return `None` in the case of the span being in a macro expansion, but the target
+/// context is from expanding a macro argument.
 ///
 /// Given the following
 ///
@@ -600,39 +753,6 @@ fn snippet_with_context_sess<'a>(
 pub fn walk_span_to_context(span: Span, outer: SyntaxContext) -> Option<Span> {
     let outer_span = hygiene::walk_chain(span, outer);
     (outer_span.ctxt() == outer).then_some(outer_span)
-}
-
-/// Removes block comments from the given `Vec` of lines.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// without_block_comments(vec!["/*", "foo", "*/"]);
-/// // => vec![]
-///
-/// without_block_comments(vec!["bar", "/*", "foo", "*/"]);
-/// // => vec!["bar"]
-/// ```
-pub fn without_block_comments(lines: Vec<&str>) -> Vec<&str> {
-    let mut without = vec![];
-
-    let mut nest_level = 0;
-
-    for line in lines {
-        if line.contains("/*") {
-            nest_level += 1;
-            continue;
-        } else if line.contains("*/") {
-            nest_level -= 1;
-            continue;
-        }
-
-        if nest_level == 0 {
-            without.push(line);
-        }
-    }
-
-    without
 }
 
 /// Trims the whitespace from the start and the end of the span.
@@ -661,15 +781,15 @@ pub fn trim_span(sm: &SourceMap, span: Span) -> Span {
 /// writeln!(o, "")   ->   writeln!(o, "")
 ///             ^^                   ^^^^
 /// ```
-pub fn expand_past_previous_comma(cx: &LateContext<'_>, span: Span) -> Span {
-    let extended = cx.sess().source_map().span_extend_to_prev_char(span, ',', true);
+pub fn expand_past_previous_comma<'sm>(sm: impl HasSourceMap<'sm>, span: Span) -> Span {
+    let extended = sm.source_map().span_extend_to_prev_char(span, ',', true);
     extended.with_lo(extended.lo() - BytePos(1))
 }
 
 /// Converts `expr` to a `char` literal if it's a `str` literal containing a single
 /// character (or a single byte with `ascii_only`)
-pub fn str_literal_to_char_literal(
-    cx: &LateContext<'_>,
+pub fn str_literal_to_char_literal<'sm>(
+    sm: impl HasSourceMap<'sm>,
     expr: &Expr<'_>,
     applicability: &mut Applicability,
     ascii_only: bool,
@@ -684,7 +804,7 @@ pub fn str_literal_to_char_literal(
         }
         && len == 1
     {
-        let snip = snippet_with_applicability(cx, expr.span, string, applicability);
+        let snip = snippet_with_applicability(sm, expr.span, string, applicability);
         let ch = if let StrStyle::Raw(nhash) = style {
             let nhash = nhash as usize;
             // for raw string: r##"a"##
@@ -712,15 +832,15 @@ pub fn str_literal_to_char_literal(
 
 #[cfg(test)]
 mod test {
-    use super::{reindent_multiline, without_block_comments};
+    use super::reindent_multiline;
 
     #[test]
     fn test_reindent_multiline_single_line() {
-        assert_eq!("", reindent_multiline("".into(), false, None));
-        assert_eq!("...", reindent_multiline("...".into(), false, None));
-        assert_eq!("...", reindent_multiline("    ...".into(), false, None));
-        assert_eq!("...", reindent_multiline("\t...".into(), false, None));
-        assert_eq!("...", reindent_multiline("\t\t...".into(), false, None));
+        assert_eq!("", reindent_multiline("", false, None));
+        assert_eq!("...", reindent_multiline("...", false, None));
+        assert_eq!("...", reindent_multiline("    ...", false, None));
+        assert_eq!("...", reindent_multiline("\t...", false, None));
+        assert_eq!("...", reindent_multiline("\t\t...", false, None));
     }
 
     #[test]
@@ -735,7 +855,7 @@ mod test {
             y
         } else {
             z
-        }".into(), false, None));
+        }", false, None));
         assert_eq!("\
     if x {
     \ty
@@ -745,7 +865,7 @@ mod test {
         \ty
         } else {
         \tz
-        }".into(), false, None));
+        }", false, None));
     }
 
     #[test]
@@ -762,7 +882,7 @@ mod test {
 
         } else {
             z
-        }".into(), false, None));
+        }", false, None));
     }
 
     #[test]
@@ -778,31 +898,6 @@ mod test {
         y
     } else {
         z
-    }".into(), true, Some(8)));
-    }
-
-    #[test]
-    fn test_without_block_comments_lines_without_block_comments() {
-        let result = without_block_comments(vec!["/*", "", "*/"]);
-        println!("result: {result:?}");
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["", "/*", "", "*/", "#[crate_type = \"lib\"]", "/*", "", "*/", ""]);
-        assert_eq!(result, vec!["", "#[crate_type = \"lib\"]", ""]);
-
-        let result = without_block_comments(vec!["/* rust", "", "*/"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["/* one-line comment */"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["/* nested", "/* multi-line", "comment", "*/", "test", "*/"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["/* nested /* inline /* comment */ test */ */"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["foo", "bar", "baz"]);
-        assert_eq!(result, vec!["foo", "bar", "baz"]);
+    }", true, Some(8)));
     }
 }

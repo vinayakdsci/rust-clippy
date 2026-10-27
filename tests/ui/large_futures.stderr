@@ -1,5 +1,5 @@
 error: large future with a size of 16385 bytes
-  --> tests/ui/large_futures.rs:10:9
+  --> tests/ui/large_futures.rs:8:9
    |
 LL |         big_fut([0u8; 1024 * 16]).await;
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider `Box::pin` on it: `Box::pin(big_fut([0u8; 1024 * 16]))`
@@ -8,39 +8,40 @@ LL |         big_fut([0u8; 1024 * 16]).await;
    = help: to override `-D warnings` add `#[allow(clippy::large_futures)]`
 
 error: large future with a size of 16386 bytes
-  --> tests/ui/large_futures.rs:14:5
+  --> tests/ui/large_futures.rs:11:5
    |
 LL |     f.await
    |     ^ help: consider `Box::pin` on it: `Box::pin(f)`
 
 error: large future with a size of 16387 bytes
-  --> tests/ui/large_futures.rs:19:9
+  --> tests/ui/large_futures.rs:16:9
    |
 LL |         wait().await;
    |         ^^^^^^ help: consider `Box::pin` on it: `Box::pin(wait())`
 
 error: large future with a size of 16387 bytes
-  --> tests/ui/large_futures.rs:24:13
+  --> tests/ui/large_futures.rs:22:13
    |
 LL |             wait().await;
    |             ^^^^^^ help: consider `Box::pin` on it: `Box::pin(wait())`
 
 error: large future with a size of 65540 bytes
-  --> tests/ui/large_futures.rs:32:5
+  --> tests/ui/large_futures.rs:30:5
    |
 LL |     foo().await;
    |     ^^^^^ help: consider `Box::pin` on it: `Box::pin(foo())`
 
 error: large future with a size of 49159 bytes
-  --> tests/ui/large_futures.rs:34:5
+  --> tests/ui/large_futures.rs:33:5
    |
 LL |     calls_fut(fut).await;
    |     ^^^^^^^^^^^^^^ help: consider `Box::pin` on it: `Box::pin(calls_fut(fut))`
 
 error: large future with a size of 65540 bytes
-  --> tests/ui/large_futures.rs:47:5
+  --> tests/ui/large_futures.rs:46:5
    |
 LL | /     async {
+LL | |
 LL | |
 LL | |         let x = [0i32; 1024 * 16];
 LL | |         async {}.await;
@@ -52,6 +53,7 @@ help: consider `Box::pin` on it
    |
 LL ~     Box::pin(async {
 LL +
+LL + 
 LL +         let x = [0i32; 1024 * 16];
 LL +         async {}.await;
 LL +         println!("{:?}", x);
@@ -61,7 +63,10 @@ LL +     })
 error: large future with a size of 65540 bytes
   --> tests/ui/large_futures.rs:59:13
    |
+LL |       macro_rules! macro_ {
+LL |           () => {
 LL | /             async {
+LL | |
 LL | |                 let x = [0i32; 1024 * 16];
 LL | |                 async {}.await;
 LL | |                 println!("macro: {:?}", x);
@@ -71,10 +76,10 @@ LL | |             }
 LL |       macro_!().await
    |       --------- in this macro invocation
    |
-   = note: this error originates in the macro `macro_` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider `Box::pin` on it
    |
 LL ~             Box::pin(async {
+LL +
 LL +                 let x = [0i32; 1024 * 16];
 LL +                 async {}.await;
 LL +                 println!("macro: {:?}", x);

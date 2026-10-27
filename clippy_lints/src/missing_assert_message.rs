@@ -1,9 +1,8 @@
-use clippy_utils::diagnostics::span_lint_and_help;
-use clippy_utils::macros::{find_assert_args, find_assert_eq_args, root_macro_call_first_node, PanicExpn};
-use clippy_utils::{is_in_cfg_test, is_in_test_function};
+use clippy_utils::diagnostics::span_lint_and_then;
+use clippy_utils::is_in_test;
+use clippy_utils::macros::{find_assert_args, find_assert_eq_args, root_macro_call_first_node};
 use rustc_hir::Expr;
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::declare_lint_pass;
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
 use rustc_span::sym;
 
 declare_clippy_lint! {
@@ -62,7 +61,7 @@ impl<'tcx> LateLintPass<'tcx> for MissingAssertMessage {
         };
 
         // This lint would be very noisy in tests, so just ignore if we're in test context
-        if is_in_test_function(cx.tcx, expr.hir_id) || is_in_cfg_test(cx.tcx, expr.hir_id) {
+        if is_in_test(cx.tcx, expr.hir_id) {
             return;
         }
 
@@ -78,14 +77,16 @@ impl<'tcx> LateLintPass<'tcx> for MissingAssertMessage {
             panic_expn
         };
 
-        if let PanicExpn::Empty = panic_expn {
-            span_lint_and_help(
+        if panic_expn.is_default_message() {
+            #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+            span_lint_and_then(
                 cx,
                 MISSING_ASSERT_MESSAGE,
                 macro_call.span,
                 "assert without any message",
-                None,
-                "consider describing why the failing assert is problematic",
+                |diag| {
+                    diag.help("consider describing why the failing assert is problematic");
+                },
             );
         }
     }

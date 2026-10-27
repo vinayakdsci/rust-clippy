@@ -12,11 +12,24 @@ fn main() {
 
     unsafe {
         core::mem::swap(addr_of_mut_to_ref!(x), &mut *y);
-        //~^ ERROR: call to `core::mem::swap` with a parameter derived from a raw pointer
-        //~| NOTE: `-D clippy::swap-ptr-to-ref` implied by `-D warnings`
+        //~^ swap_ptr_to_ref
+
         core::mem::swap(&mut *y, addr_of_mut_to_ref!(x));
-        //~^ ERROR: call to `core::mem::swap` with a parameter derived from a raw pointer
+        //~^ swap_ptr_to_ref
+
         core::mem::swap(addr_of_mut_to_ref!(x), addr_of_mut_to_ref!(x));
-        //~^ ERROR: call to `core::mem::swap` with a parameter derived from a raw pointer
+        //~^ swap_ptr_to_ref
+    }
+}
+
+fn pr17777() {
+    // after const is fixable -> in that test
+    #[clippy::msrv = "1.84.0"]
+    #[expect(clippy::incompatible_msrv)]
+    const fn before_const_msrv(y: *mut u32, z: *mut u32) {
+        unsafe {
+            core::mem::swap(&mut *y, &mut *z);
+            //~^ swap_ptr_to_ref
+        }
     }
 }

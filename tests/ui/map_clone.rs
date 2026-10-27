@@ -1,22 +1,25 @@
 #![warn(clippy::map_clone)]
-#![allow(
+#![allow(clippy::iter_cloned_collect)]
+#![expect(
     clippy::clone_on_copy,
-    clippy::iter_cloned_collect,
-    clippy::many_single_char_names,
-    clippy::redundant_clone,
+    clippy::empty_loop,
     clippy::redundant_closure,
     clippy::useless_asref,
-    clippy::useless_vec,
-    clippy::empty_loop
+    clippy::useless_vec
 )]
 
 fn main() {
     let _: Vec<i8> = vec![5_i8; 6].iter().map(|x| *x).collect();
+    //~^ map_clone
     let _: Vec<String> = vec![String::new()].iter().map(|x| x.clone()).collect();
+    //~^ map_clone
     let _: Vec<u32> = vec![42, 43].iter().map(|&x| x).collect();
+    //~^ map_clone
     let _: Option<u64> = Some(Box::new(16)).map(|b| *b);
     let _: Option<u64> = Some(&16).map(|b| *b);
+    //~^ map_clone
     let _: Option<u8> = Some(&1).map(|x| x.clone());
+    //~^ map_clone
 
     // Don't lint these
     let v = vec![5_i8; 6];
@@ -28,6 +31,7 @@ fn main() {
 
     // Issue #498
     let _ = std::env::args().map(|v| v.clone());
+    //~^ map_clone
 
     // Issue #4824 item types that aren't references
     {
@@ -64,25 +68,32 @@ fn main() {
         let _ = Some(RefCell::new(String::new()).borrow()).map(|s| s.clone());
     }
 
+    // Issue #17550
+    {
+        let string = String::new();
+        let input = [&string];
+        let _: Vec<String> = input.iter().map(|s: &&String| String::clone(s)).collect();
+        let _: Vec<String> = input.iter().map(|s: &&String| <String as Clone>::clone(s)).collect();
+    }
+
     let x = Some(String::new());
     let x = x.as_ref(); // We do this to prevent triggering the `useless_asref` lint.
     let y = x.map(|x| String::clone(x));
-    //~^ ERROR: you are explicitly cloning with `.map()`
+    //~^ map_clone
+
     let y = x.map(Clone::clone);
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `cloned` method
+    //~^ map_clone
+
     let y = x.map(String::clone);
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `cloned` method
+    //~^ map_clone
 
     let x: Option<u32> = Some(0);
     let x = x.as_ref(); // We do this to prevent triggering the `useless_asref` lint.
     let y = x.map(|x| u32::clone(x));
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `copied` method
+    //~^ map_clone
+
     let y = x.map(|x| Clone::clone(x));
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `copied` method
+    //~^ map_clone
 
     // Should not suggest `copied` or `cloned` here since `T` is not a reference.
     let x: Option<u32> = Some(0);
@@ -93,20 +104,18 @@ fn main() {
     let x: Result<String, ()> = Ok(String::new());
     let x = x.as_ref(); // We do this to prevent triggering the `useless_asref` lint.
     let y = x.map(|x| String::clone(x));
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `cloned` method
+    //~^ map_clone
+
     let y = x.map(|x| Clone::clone(x));
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `cloned` method
+    //~^ map_clone
 
     let x: Result<u32, ()> = Ok(0);
     let x = x.as_ref(); // We do this to prevent triggering the `useless_asref` lint.
     let y = x.map(|x| u32::clone(x));
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `copied` method
+    //~^ map_clone
+
     let y = x.map(|x| Clone::clone(x));
-    //~^ ERROR: you are explicitly cloning with `.map()`
-    //~| HELP: consider calling the dedicated `copied` method
+    //~^ map_clone
 
     // Should not suggest `copied` or `cloned` here since `T` is not a reference.
     let x: Result<u32, ()> = Ok(0);

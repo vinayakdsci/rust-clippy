@@ -1,5 +1,6 @@
-#![allow(unused, clippy::needless_lifetimes)]
 #![warn(clippy::missing_trait_methods)]
+#![expect(clippy::needless_lifetimes)]
+#![allow(clippy::derive_ord_xor_partial_ord)]
 
 trait A {
     fn provided() {}
@@ -20,10 +21,11 @@ trait B {
 struct Partial;
 
 impl A for Partial {}
-//~^ ERROR: missing trait method provided by default: `provided`
+//~^ missing_trait_methods
 
 impl B for Partial {
-    //~^ ERROR: missing trait method provided by default: `b`
+    //~^ missing_trait_methods
+
     fn required() {}
 
     fn a(_: usize) -> usize {
@@ -49,4 +51,48 @@ impl B for Complete {
     }
 }
 
+trait MissingMultiple {
+    fn one() {}
+    fn two() {}
+    fn three() {}
+}
+
+impl MissingMultiple for Partial {}
+//~^ missing_trait_methods
+//~| missing_trait_methods
+//~| missing_trait_methods
+
 fn main() {}
+
+//~v missing_trait_methods
+impl PartialEq<Partial> for Partial {
+    fn eq(&self, other: &Partial) -> bool {
+        todo!()
+    }
+}
+
+#[clippy::msrv = "1.20.0"]
+fn msrv0() {
+    #[derive(PartialEq, Eq, PartialOrd)]
+    struct S {}
+
+    impl Ord for S {
+        fn cmp(&self, other: &S) -> std::cmp::Ordering {
+            unreachable!()
+        }
+    }
+}
+
+#[clippy::msrv = "1.21.0"]
+fn msrv1() {
+    #[derive(PartialEq, Eq, PartialOrd)]
+    struct S {}
+
+    impl Ord for S {
+        //~^ missing_trait_methods
+        //~| missing_trait_methods
+        fn cmp(&self, other: &S) -> std::cmp::Ordering {
+            unreachable!()
+        }
+    }
+}

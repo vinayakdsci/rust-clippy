@@ -1,7 +1,13 @@
 #![feature(try_blocks)]
-#![allow(unreachable_code)]
-#![allow(dead_code)]
-#![allow(clippy::unnecessary_wraps)]
+#![warn(clippy::question_mark)]
+#![allow(
+    clippy::needless_return,
+    clippy::no_effect,
+    clippy::toplevel_ref_arg,
+    clippy::unnecessary_wraps
+)]
+
+use std::sync::MutexGuard;
 
 fn some_func(a: Option<u32>) -> Option<u32> {
     a?;
@@ -96,11 +102,36 @@ impl MoveStruct {
 }
 
 fn func() -> Option<i32> {
+    macro_rules! opt_none {
+        () => {
+            None
+        };
+    }
+
     fn f() -> Option<String> {
         Some(String::new())
     }
 
     f()?;
+
+    let _val = f()?;
+
+    let s: &str = &Some(String::new())?;
+
+    f()?;
+
+    opt_none!()?;
+
+    match f() {
+        Some(x) => x,
+        None => return opt_none!(),
+    };
+
+    {
+        let val = f()?;
+        println!("{val}");
+        val
+    };
 
     Some(0)
 }
@@ -111,8 +142,13 @@ fn func_returning_result() -> Result<i32, i32> {
 
 fn result_func(x: Result<i32, i32>) -> Result<i32, i32> {
     let _ = x?;
+    //~^ question_mark
 
     x?;
+
+    let _val = func_returning_result()?;
+
+    func_returning_result()?;
 
     // No warning
     let y = if let Ok(x) = x {
@@ -155,6 +191,28 @@ fn result_func(x: Result<i32, i32>) -> Result<i32, i32> {
     }
 
     Ok(y)
+}
+
+fn infer_check() {
+    let closure = |x: Result<u8, ()>| {
+        // `?` would fail here, as it expands to `Err(val.into())` which is not constrained.
+        let _val = match x {
+            Ok(val) => val,
+            Err(val) => return Err(val),
+        };
+
+        Ok(())
+    };
+
+    let closure = |x: Result<u8, ()>| -> Result<(), _> {
+        // `?` would fail here, as it expands to `Err(val.into())` which is not constrained.
+        let _val = match x {
+            Ok(val) => val,
+            Err(val) => return Err(val),
+        };
+
+        Ok(())
+    };
 }
 
 // see issue #8019
@@ -242,6 +300,11 @@ fn pattern() -> Result<(), PatternedError> {
     res
 }
 
+fn expect_expr(a: Option<usize>) -> Option<usize> {
+    #[expect(clippy::needless_question_mark)]
+    Some(a?)
+}
+
 fn main() {}
 
 // `?` is not the same as `return None;` if inside of a try block
@@ -315,5 +378,200 @@ fn issue12412(foo: &Foo, bar: &Bar) -> Option<()> {
     };
     // lint
     let v = bar.foo.owned.clone()?;
+    //~^^^ question_mark
     Some(())
+}
+
+struct StructWithOptionString {
+    opt_x: Option<String>,
+}
+
+struct WrapperStructWithString(String);
+
+#[allow(clippy::disallowed_names)]
+fn issue_13417(foo: &mut StructWithOptionString) -> Option<String> {
+    let x = foo.opt_x.as_ref()?;
+    //~^^^ question_mark
+    let opt_y = Some(x.clone());
+    std::mem::replace(&mut foo.opt_x, opt_y)
+}
+
+#[allow(clippy::disallowed_names)]
+fn issue_13417_mut(foo: &mut StructWithOptionString) -> Option<String> {
+    let x = foo.opt_x.as_mut()?;
+    //~^^^ question_mark
+    let opt_y = Some(x.clone());
+    std::mem::replace(&mut foo.opt_x, opt_y)
+}
+
+#[allow(clippy::disallowed_names)]
+fn issue_13417_weirder(foo: &mut StructWithOptionString, mut bar: Option<WrapperStructWithString>) -> Option<()> {
+    let x @ y = foo.opt_x.as_ref()?;
+    //~^^^ question_mark
+    let x @ &WrapperStructWithString(_) = bar.as_ref()?;
+    //~^^^ question_mark
+    let x @ &mut WrapperStructWithString(_) = bar.as_mut()?;
+    //~^^^ question_mark
+    Some(())
+}
+
+#[clippy::msrv = "1.12"]
+fn msrv_1_12(arg: Option<i32>) -> Option<i32> {
+    if arg.is_none() {
+        return None;
+    }
+    let val = match arg {
+        Some(val) => val,
+        None => return None,
+    };
+    println!("{}", val);
+    Some(val)
+}
+
+#[clippy::msrv = "1.13"]
+fn msrv_1_13(arg: Option<i32>) -> Option<i32> {
+    arg?;
+    let val = arg?;
+    println!("{}", val);
+    Some(val)
+}
+
+fn issue_14615(a: MutexGuard<Option<u32>>) -> Option<String> {
+    let a = (*a)?;
+    //~^^^ question_mark
+    Some(format!("{a}"))
+}
+
+fn const_in_pattern(x: Option<(i32, i32)>) -> Option<()> {
+    const N: i32 = 0;
+
+    let Some((x, N)) = x else {
+        return None;
+    };
+
+    None
+}
+
+fn issue_13642(x: Option<i32>) -> Option<()> {
+    let Some(x) = x else {
+        #[cfg(false)]
+        panic!();
+
+        #[cfg(true)]
+        return None;
+    };
+
+    None
+}
+
+fn issue_15679() -> Result<i32, String> {
+    let some_result: Result<i32, &'static str> = todo!();
+
+    some_result?;
+
+    some_result?;
+
+    some_result?;
+
+    Ok(0)
+}
+
+mod issue14894 {
+    fn use_after_question_mark(do_something_else: impl Fn() -> Result<String, ()>) -> Result<(), ()> {
+        let result = do_something_else();
+        if let Err(reason) = result {
+            return Err(reason);
+        }
+        drop(result);
+
+        let result = do_something_else();
+        let x = result?;
+        drop(x);
+
+        Ok(())
+    }
+
+    #[expect(dropping_copy_types)]
+    fn use_after_question_mark_but_is_copy(do_something_else: impl Fn() -> Result<i32, ()>) -> Result<(), ()> {
+        let result = do_something_else();
+        result?;
+        drop(result);
+
+        Ok(())
+    }
+}
+
+fn wrongly_unmangled_macros() -> Option<i32> {
+    macro_rules! test_expr {
+        ($val:expr) => {
+            Some($val)
+        };
+    }
+
+    let x = test_expr!(42)?;
+    //~^^^ question_mark
+    Some(x);
+
+    test_expr!(42)?;
+    test_expr!(42)
+}
+
+fn issue16429(b: i32) -> Option<i32> {
+    let a = Some(5);
+    let _ = if b == 1 {
+        b
+    } else { a? };
+
+    Some(0)
+}
+
+fn issue16654() -> Result<(), i32> {
+    let result = func_returning_result();
+
+    #[allow(clippy::collapsible_if)]
+    if true {
+        result?;
+    }
+
+    _ = [{ result?; }];
+
+    Ok(())
+}
+
+#[rustfmt::skip]
+fn issue16751(mut v: Option<usize>) -> Option<usize> {
+    let _ = {
+        let n = &v?;
+        println!("{n}");
+        Some(42)
+    };
+
+    let _ = {
+        let ref mut n = v?;
+        println!("{n}");
+        Some(42)
+    };
+
+    let _ = {
+        let ref mut n = v?;
+        //~^ question_mark
+        println!("{n}");
+        42
+    };
+
+    {
+        let n = v?;
+        if n > 10 { Some(42) } else { None }
+    }
+}
+
+fn issue_destructuring_assignment() -> Option<(i32, i32)> {
+    let mut a = 0i32;
+    let mut b = 0i32;
+    let opt: Option<(i32, i32)> = Some((1, 2));
+    {
+        let x = opt?;
+        (a, b) = x
+    }
+    Some((a, b))
 }

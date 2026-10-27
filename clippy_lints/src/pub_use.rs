@@ -1,7 +1,6 @@
-use clippy_utils::diagnostics::span_lint_and_help;
+use clippy_utils::diagnostics::span_lint_and_then;
 use rustc_ast::ast::{Item, ItemKind, VisibilityKind};
-use rustc_lint::{EarlyContext, EarlyLintPass};
-use rustc_session::declare_lint_pass;
+use rustc_lint::{EarlyContext, EarlyLintPass, declare_lint_pass};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -35,6 +34,7 @@ declare_clippy_lint! {
     restriction,
     "restricts the usage of `pub use`"
 }
+
 declare_lint_pass!(PubUse => [PUB_USE]);
 
 impl EarlyLintPass for PubUse {
@@ -42,14 +42,10 @@ impl EarlyLintPass for PubUse {
         if let ItemKind::Use(_) = item.kind
             && let VisibilityKind::Public = item.vis.kind
         {
-            span_lint_and_help(
-                cx,
-                PUB_USE,
-                item.span,
-                "using `pub use`",
-                None,
-                "move the exported item to a public module instead",
-            );
+            #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+            span_lint_and_then(cx, PUB_USE, item.span, "using `pub use`", |diag| {
+                diag.help("move the exported item to a public module instead");
+            });
         }
     }
 }

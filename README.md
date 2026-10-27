@@ -1,11 +1,10 @@
 # Clippy
 
-[![Clippy Test](https://github.com/rust-lang/rust-clippy/workflows/Clippy%20Test%20(bors)/badge.svg?branch=auto&event=push)](https://github.com/rust-lang/rust-clippy/actions?query=workflow%3A%22Clippy+Test+(bors)%22+event%3Apush+branch%3Aauto)
 [![License: MIT OR Apache-2.0](https://img.shields.io/crates/l/clippy.svg)](#license)
 
 A collection of lints to catch common mistakes and improve your [Rust](https://github.com/rust-lang/rust) code.
 
-[There are over 700 lints included in this crate!](https://rust-lang.github.io/rust-clippy/master/index.html)
+[There are over 800 lints included in this crate!](https://clippy.rust-lang.org/main/index.html)
 
 Lints are divided into categories, each with a default [lint level](https://doc.rust-lang.org/rustc/lints/levels.html).
 You can choose how much Clippy is supposed to ~~annoy~~ help you by changing the lint level by category.
@@ -36,9 +35,9 @@ on a case-by-case basis before enabling.
     - Preventing panicking in certain functions (e.g. [`clippy::unwrap_used`]).
     - Running a lint only on a subset of code (e.g. `#[forbid(clippy::float_arithmetic)]` on a module).
 
-[`clippy::else_if_without_else`]: https://rust-lang.github.io/rust-clippy/master/index.html#else_if_without_else
-[`clippy::todo`]: https://rust-lang.github.io/rust-clippy/master/index.html#todo
-[`clippy::unwrap_used`]: https://rust-lang.github.io/rust-clippy/master/index.html#unwrap_used
+[`clippy::else_if_without_else`]: https://clippy.rust-lang.org/main/index.html#else_if_without_else
+[`clippy::todo`]: https://clippy.rust-lang.org/main/index.html#todo
+[`clippy::unwrap_used`]: https://clippy.rust-lang.org/main/index.html#unwrap_used
 
 ---
 
@@ -141,17 +140,26 @@ before_script:
 script:
   - cargo clippy
   # if you want the build job to fail when encountering warnings, use
-  - cargo clippy -- -D warnings
+  - CARGO_BUILD_WARNINGS=deny cargo clippy
   # in order to also check tests and non-default crate features, use
-  - cargo clippy --all-targets --all-features -- -D warnings
+  - CARGO_BUILD_WARNINGS=deny cargo clippy --all-targets --all-features
   - cargo test
   # etc.
 ```
 
-Note that adding `-D warnings` will cause your build to fail if **any** warnings are found in your code.
+Note that setting `CARGO_BUILD_WARNINGS=deny` will cause your build to fail if **any** warnings are found in your code.
 That includes warnings found by rustc (e.g. `dead_code`, etc.). If you want to avoid this and only cause
 an error for Clippy warnings, use `#![deny(clippy::all)]` in your code or `-D clippy::all` on the command
 line. (You can swap `clippy::all` with the specific lint category you are targeting.)
+
+Also note that before Cargo 1.97, the usual way to deny all warnings was by using `-D warnings`:
+
+```shell
+cargo clippy -- -D warnings
+```
+
+However, [`CARGO_BUILD_WARNINGS`] has the benefit of not invalidating build caches,
+and is thus to be preferred going forward.
 
 ## Configuration
 
@@ -160,11 +168,11 @@ line. (You can swap `clippy::all` with the specific lint category you are target
 You can add options to your code to `allow`/`warn`/`deny` Clippy lints:
 
 * the whole set of `Warn` lints using the `clippy` lint group (`#![deny(clippy::all)]`).
-    Note that `rustc` has additional [lint groups](https://doc.rust-lang.org/rustc/lints/groups.html).
+  Note that `rustc` has additional [lint groups](https://doc.rust-lang.org/rustc/lints/groups.html).
 
 * all lints using both the `clippy` and `clippy::pedantic` lint groups (`#![deny(clippy::all)]`,
-    `#![deny(clippy::pedantic)]`). Note that `clippy::pedantic` contains some very aggressive
-    lints prone to false positives.
+  `#![deny(clippy::pedantic)]`). Note that `clippy::pedantic` contains some very aggressive
+  lints prone to false positives.
 
 * only some lints (`#![deny(clippy::single_match, clippy::box_vec)]`, etc.)
 
@@ -216,11 +224,11 @@ disallowed-names = ["toto", "tata", "titi"]
 
 The [table of configurations](https://doc.rust-lang.org/nightly/clippy/lint_configuration.html)
 contains all config values, their default, and a list of lints they affect.
-Each [configurable lint](https://rust-lang.github.io/rust-clippy/master/index.html#Configuration)
+Each [configurable lint](https://clippy.rust-lang.org/main/index.html#Configuration)
 , also contains information about these values.
 
 For configurations that are a list type with default values such as
-[disallowed-names](https://rust-lang.github.io/rust-clippy/master/index.html#disallowed_names),
+[disallowed-names](https://clippy.rust-lang.org/main/index.html#disallowed_names),
 you can use the unique value `".."` to extend the default values instead of replacing them.
 
 ```toml
@@ -268,17 +276,17 @@ is equivalent to `msrv = 1.30.0`.
 
 Note: `custom_inner_attributes` is an unstable feature, so it has to be enabled explicitly.
 
-Lints that recognize this configuration option can be found [here](https://rust-lang.github.io/rust-clippy/master/index.html#msrv)
+Lints that recognize this configuration option can be found [here](https://clippy.rust-lang.org/main/index.html#msrv)
 
 ## Contributing
 
-If you want to contribute to Clippy, you can find more information in [CONTRIBUTING.md](https://github.com/rust-lang/rust-clippy/blob/master/CONTRIBUTING.md).
+If you want to contribute to Clippy, you can find more information in [CONTRIBUTING.md](https://github.com/rust-lang/rust-clippy/blob/HEAD/CONTRIBUTING.md).
 
 ## License
 
 <!-- REUSE-IgnoreStart -->
 
-Copyright 2014-2024 The Rust Project Developers
+Copyright (c) The Rust Project Contributors
 
 Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 [https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)> or the MIT license
@@ -287,3 +295,5 @@ option. Files in the project may not be
 copied, modified, or distributed except according to those terms.
 
 <!-- REUSE-IgnoreEnd -->
+
+[`CARGO_BUILD_WARNINGS`]: https://doc.rust-lang.org/cargo/reference/config.html#buildwarnings

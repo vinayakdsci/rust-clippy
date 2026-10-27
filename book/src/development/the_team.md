@@ -33,7 +33,7 @@ this group to help with triaging, which can include:
 
 1. **Labeling issues**
 
-    For the `good-first-issue` label, it can still be good to use `@rustbot` to
+    For the `good first issue` label, it can still be good to use `@rustbot` to
     subscribe to the issue and help interested parties, if they post questions
     in the comments. 
 
@@ -51,7 +51,7 @@ this group to help with triaging, which can include:
     busy or wants to abandon it. If the reviewer is busy, the PR can be
     reassigned to someone else.
 
-    Checkout: https://triage.rust-lang.org/triage/rust-lang/rust-clippy to
+    Checkout: <https://triage.rust-lang.org/triage/rust-lang/rust-clippy> to
     monitor PRs.
 
 While not part of their duties, contributors are encouraged to review PRs
@@ -72,7 +72,7 @@ you to the alumni group. You're always welcome to come back.
 
 ## The Clippy Team
 
-[The Clippy team](https://www.rust-lang.org/governance/teams/dev-tools#Clippy%20team)
+[The Clippy team](https://www.rust-lang.org/governance/teams/dev-tools#team-clippy)
 is responsible for maintaining Clippy.
 
 ### Duties
@@ -102,8 +102,7 @@ is responsible for maintaining Clippy.
 
 5. **Update the changelog**
 
-    This needs to be done for every release, every six weeks. This is usually
-    done by @xFrednet.
+    This needs to be done for every release, every six weeks.
 
 ### Membership
 
@@ -128,3 +127,26 @@ you to the alumni group. You're always welcome to come back.
 [calendar repository]: https://github.com/rust-lang/calendar/blob/main/clippy.toml
 [clippy.ics]: https://rust-lang.github.io/calendar/clippy.ics
 [labeling with @rustbot]: https://forge.rust-lang.org/triagebot/labeling.html
+
+
+### Final Comment Period (FCPs)
+
+Team members can nominate lints (or other big changes) for inclusion via
+the [`lint-nominated`] label or via `@rustbot label +lint-nominated`.
+Triagebot then opens a thread in Zulip and the rest of the team discusses it.
+
+Although anyone can vote on an FCP and raise concerns, and this is encouraged
+even for non-members, only team votes are accounted towards FCP resolution.
+
+----
+
+An FCP can only be closed if:
+
+1. 2 Team members have accepted it (including the one who opened it).
+2. A grace period of 1 to 2 weeks has passed.
+3. All concerns are resolved.
+
+If an FCP goes stale or does not meet the necessary votes for it to be closed,
+it can also be nominated for discussion in a meeting.
+
+[`lint-nominated`]: https://github.com/rust-lang/rust-clippy/pulls?q=sort%3Aupdated-desc+is%3Apr+state%3Aopen+label%3Alint-nominated

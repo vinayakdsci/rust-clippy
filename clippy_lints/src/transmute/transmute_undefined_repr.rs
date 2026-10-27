@@ -3,7 +3,7 @@ use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::ty::is_c_void;
 use rustc_hir::Expr;
 use rustc_lint::LateContext;
-use rustc_middle::ty::{self, GenericArgsRef, IntTy, Ty, UintTy};
+use rustc_middle::ty::{self, GenericArgsRef, IntTy, Ty, UintTy, Unnormalized};
 
 #[expect(clippy::too_many_lines)]
 pub(super) fn check<'tcx>(
@@ -12,8 +12,8 @@ pub(super) fn check<'tcx>(
     from_ty_orig: Ty<'tcx>,
     to_ty_orig: Ty<'tcx>,
 ) -> bool {
-    let mut from_ty = cx.tcx.erase_regions(from_ty_orig);
-    let mut to_ty = cx.tcx.erase_regions(to_ty_orig);
+    let mut from_ty = cx.tcx.erase_and_anonymize_regions(from_ty_orig);
+    let mut to_ty = cx.tcx.erase_and_anonymize_regions(to_ty_orig);
 
     while from_ty != to_ty {
         let reduced_tys = reduce_refs(cx, from_ty, to_ty);
@@ -30,17 +30,14 @@ pub(super) fn check<'tcx>(
             | (ReducedTy::UnorderedFields(from_sub_ty), ReducedTy::OrderedFields(Some(to_sub_ty))) => {
                 from_ty = from_sub_ty;
                 to_ty = to_sub_ty;
-                continue;
             },
             (ReducedTy::OrderedFields(Some(from_sub_ty)), ReducedTy::Other(to_sub_ty)) if reduced_tys.to_fat_ptr => {
                 from_ty = from_sub_ty;
                 to_ty = to_sub_ty;
-                continue;
             },
             (ReducedTy::Other(from_sub_ty), ReducedTy::OrderedFields(Some(to_sub_ty))) if reduced_tys.from_fat_ptr => {
                 from_ty = from_sub_ty;
                 to_ty = to_sub_ty;
-                continue;
             },
 
             // ptr <-> ptr
@@ -50,7 +47,6 @@ pub(super) fn check<'tcx>(
             {
                 from_ty = from_sub_ty;
                 to_ty = to_sub_ty;
-                continue;
             },
 
             // fat ptr <-> (*size, *size)
@@ -206,12 +202,12 @@ fn reduce_refs<'tcx>(cx: &LateContext<'tcx>, mut from_ty: Ty<'tcx>, mut to_ty: T
                 continue;
             },
             (&(ty::Ref(_, unsized_ty, _) | ty::RawPtr(unsized_ty, _)), _)
-                if !unsized_ty.is_sized(cx.tcx, cx.param_env) =>
+                if !unsized_ty.is_sized(cx.tcx, cx.typing_env()) =>
             {
                 (true, false)
             },
             (_, &(ty::Ref(_, unsized_ty, _) | ty::RawPtr(unsized_ty, _)))
-                if !unsized_ty.is_sized(cx.tcx, cx.param_env) =>
+                if !unsized_ty.is_sized(cx.tcx, cx.typing_env()) =>
             {
                 (false, true)
             },
@@ -244,8 +240,15 @@ enum ReducedTy<'tcx> {
 /// Reduce structs containing a single non-zero sized field to it's contained type.
 fn reduce_ty<'tcx>(cx: &LateContext<'tcx>, mut ty: Ty<'tcx>) -> ReducedTy<'tcx> {
     loop {
-        ty = cx.tcx.try_normalize_erasing_regions(cx.param_env, ty).unwrap_or(ty);
+        ty = cx
+            .tcx
+            .try_normalize_erasing_regions(cx.typing_env(), Unnormalized::new_wip(ty))
+            .unwrap_or(ty);
         return match *ty.kind() {
+            ty::Pat(base, _) => {
+                ty = base;
+                continue;
+            },
             ty::Array(sub_ty, _) if matches!(sub_ty.kind(), ty::Int(_) | ty::Uint(_)) => {
                 ReducedTy::TypeErasure { raw_ptr_only: false }
             },
@@ -270,7 +273,7 @@ fn reduce_ty<'tcx>(cx: &LateContext<'tcx>, mut ty: Ty<'tcx>) -> ReducedTy<'tcx> 
                     .non_enum_variant()
                     .fields
                     .iter()
-                    .map(|f| cx.tcx.type_of(f.did).instantiate(cx.tcx, args));
+                    .map(|f| cx.tcx.type_of(f.did).instantiate(cx.tcx, args).skip_norm_wip());
                 let Some(sized_ty) = iter.find(|&ty| !is_zero_sized_ty(cx, ty)) else {
                     return ReducedTy::TypeErasure { raw_ptr_only: false };
                 };
@@ -297,8 +300,10 @@ fn reduce_ty<'tcx>(cx: &LateContext<'tcx>, mut ty: Ty<'tcx>) -> ReducedTy<'tcx> 
 }
 
 fn is_zero_sized_ty<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
-    if let Ok(ty) = cx.tcx.try_normalize_erasing_regions(cx.param_env, ty)
-        && let Ok(layout) = cx.tcx.layout_of(cx.param_env.and(ty))
+    if let Ok(ty) = cx
+        .tcx
+        .try_normalize_erasing_regions(cx.typing_env(), Unnormalized::new_wip(ty))
+        && let Ok(layout) = cx.tcx.layout_of(cx.typing_env().as_query_input(ty))
     {
         layout.layout.size().bytes() == 0
     } else {
@@ -318,12 +323,16 @@ fn is_size_pair(ty: Ty<'_>) -> bool {
 }
 
 fn same_except_params<'tcx>(subs1: GenericArgsRef<'tcx>, subs2: GenericArgsRef<'tcx>) -> bool {
-    // TODO: check const parameters as well. Currently this will consider `Array<5>` the same as
-    // `Array<6>`
-    for (ty1, ty2) in subs1.types().zip(subs2.types()).filter(|(ty1, ty2)| ty1 != ty2) {
-        match (ty1.kind(), ty2.kind()) {
-            (ty::Param(_), _) | (_, ty::Param(_)) => (),
-            (ty::Adt(adt1, subs1), ty::Adt(adt2, subs2)) if adt1 == adt2 && same_except_params(subs1, subs2) => (),
+    for (t1, t2) in subs1.terms().zip(subs2.terms()).filter(|(t1, t2)| t1 != t2) {
+        match (t1.kind(), t2.kind()) {
+            (ty::TermKind::Ty(ty1), ty::TermKind::Ty(ty2)) => match (ty1.kind(), ty2.kind()) {
+                (ty::Param(_), _) | (_, ty::Param(_)) => (),
+                (ty::Adt(adt1, subs1), ty::Adt(adt2, subs2)) if adt1 == adt2 && same_except_params(subs1, subs2) => (),
+                _ => return false,
+            },
+            // FIXME: check const parameters better as well. Currently this will consider `Array<5>` the same as
+            // `Array<6>`
+            (ty::TermKind::Const(_), ty::TermKind::Const(_)) => {},
             _ => return false,
         }
     }

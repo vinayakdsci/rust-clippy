@@ -1,6 +1,6 @@
+//@aux-build: proc_macros.rs
 #![warn(clippy::integer_division_remainder_used)]
-#![allow(unused_variables)]
-#![allow(clippy::op_ref)]
+#![expect(clippy::op_ref)]
 
 struct CustomOps(pub i32);
 impl std::ops::Div for CustomOps {
@@ -8,6 +8,7 @@ impl std::ops::Div for CustomOps {
 
     fn div(self, rhs: Self) -> Self::Output {
         Self(self.0 / rhs.0)
+        //~^ integer_division_remainder_used
     }
 }
 impl std::ops::Rem for CustomOps {
@@ -15,6 +16,7 @@ impl std::ops::Rem for CustomOps {
 
     fn rem(self, rhs: Self) -> Self::Output {
         Self(self.0 % rhs.0)
+        //~^ integer_division_remainder_used
     }
 }
 
@@ -23,12 +25,26 @@ fn main() {
     let a = 10;
     let b = 5;
     let c = a / b;
+    //~^ integer_division_remainder_used
     let d = a % b;
+    //~^ integer_division_remainder_used
     let e = &a / b;
+    //~^ integer_division_remainder_used
     let f = a % &b;
+    //~^ integer_division_remainder_used
     let g = &a / &b;
+    //~^ integer_division_remainder_used
     let h = &10 % b;
+    //~^ integer_division_remainder_used
     let i = a / &4;
+    //~^ integer_division_remainder_used
+
+    // should trigger on DivAssign and RemAssign
+    let mut j = 10;
+    j /= 2;
+    //~^ integer_division_remainder_used
+    j %= 3;
+    //~^ integer_division_remainder_used
 
     // should not trigger on custom Div and Rem
     let w = CustomOps(3);
@@ -38,4 +54,18 @@ fn main() {
     let w = CustomOps(3);
     let x = CustomOps(4);
     let z = w % x;
+
+    macro_rules! mac {
+        ($a:expr, $b:expr) => {
+            $a % $b
+            //~^ integer_division_remainder_used
+        };
+    }
+    // should not trigger if from expansion in external macro
+    let issue17048 = mac!(a, b);
+    let issue17048 = proc_macros::external! {{
+        let a = 10;
+        let b = 5;
+        a % b
+    }};
 }

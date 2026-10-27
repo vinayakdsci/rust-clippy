@@ -1,4 +1,3 @@
-#![allow(unused)]
 #![warn(clippy::unnecessary_map_on_constructor)]
 
 use std::ffi::OsStr;
@@ -30,14 +29,22 @@ fn main() {
     let c: SimpleResult = Err(err);
 
     let a = Some(x).map(fun);
+    //~^ unnecessary_map_on_constructor
     let b: SimpleResult = Ok(x).map(fun);
+    //~^ unnecessary_map_on_constructor
     let c: SimpleResult = Err(err).map_err(notfun);
+    //~^ unnecessary_map_on_constructor
 
     let a = Option::Some(x).map(fun);
+    //~^ unnecessary_map_on_constructor
     let b: SimpleResult = SimpleResult::Ok(x).map(fun);
+    //~^ unnecessary_map_on_constructor
     let c: SimpleResult = SimpleResult::Err(err).map_err(notfun);
+    //~^ unnecessary_map_on_constructor
     let b: std::result::Result<i32, SimpleError> = Ok(x).map(fun);
+    //~^ unnecessary_map_on_constructor
     let c: std::result::Result<i32, SimpleError> = Err(err).map_err(notfun);
+    //~^ unnecessary_map_on_constructor
 
     let a = Some(fun(x));
     let b: SimpleResult = Ok(fun(x));

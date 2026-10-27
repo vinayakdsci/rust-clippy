@@ -1,12 +1,5 @@
 #![warn(clippy::needless_bool)]
-#![allow(
-    unused,
-    dead_code,
-    clippy::no_effect,
-    clippy::if_same_then_else,
-    clippy::needless_return,
-    clippy::branches_sharing_code
-)]
+#![expect(clippy::if_same_then_else, clippy::needless_return)]
 
 fn main() {
     let x = true;
@@ -16,11 +9,13 @@ fn main() {
     } else {
         true
     };
+    //~^^^^^ needless_bool
     if x {
         false
     } else {
         false
     };
+    //~^^^^^ needless_bool
     if x {
         x
     } else {
@@ -36,6 +31,7 @@ fn bool_ret(x: bool) -> bool {
     } else {
         return true;
     };
+    //~^^^^^ needless_bool
 }
 
 fn bool_ret2(x: bool) -> bool {
@@ -44,4 +40,5 @@ fn bool_ret2(x: bool) -> bool {
     } else {
         return false;
     };
+    //~^^^^^ needless_bool
 }

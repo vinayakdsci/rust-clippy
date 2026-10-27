@@ -1,5 +1,5 @@
 error: try not to call a closure in the expression where it is declared
-  --> tests/ui/redundant_closure_call_early.rs:9:17
+  --> tests/ui/redundant_closure_call_early.rs:10:17
    |
 LL |     let mut k = (|m| m + 1)(i);
    |                 ^^^^^^^^^^^^^^

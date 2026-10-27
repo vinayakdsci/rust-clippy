@@ -1,5 +1,5 @@
 use clippy_utils::diagnostics::span_lint_and_then;
-use clippy_utils::source::snippet_opt;
+use clippy_utils::source::SpanExt as _;
 use clippy_utils::{eq_expr_value, sugg};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
@@ -19,9 +19,10 @@ pub(super) fn check<'tcx>(
             return;
         }
         // lhs op= l op r
-        if eq_expr_value(cx, lhs, l) {
+        let ctxt = expr.span.ctxt();
+        if eq_expr_value(cx, ctxt, lhs, l) {
             lint_misrefactored_assign_op(cx, expr, op, rhs, lhs, r);
-        } else if is_commutative(op) && eq_expr_value(cx, lhs, r) {
+        } else if is_commutative(op) && eq_expr_value(cx, ctxt, lhs, r) {
             // lhs op= l commutative_op r
             lint_misrefactored_assign_op(cx, expr, op, rhs, lhs, l);
         }
@@ -42,7 +43,9 @@ fn lint_misrefactored_assign_op(
         expr.span,
         "variable appears on both sides of an assignment operation",
         |diag| {
-            if let (Some(snip_a), Some(snip_r)) = (snippet_opt(cx, assignee.span), snippet_opt(cx, rhs_other.span)) {
+            if let Some(snip_a) = assignee.span.get_text(cx)
+                && let Some(snip_r) = rhs_other.span.get_text(cx)
+            {
                 let a = &sugg::Sugg::hir(cx, assignee, "..");
                 let r = &sugg::Sugg::hir(cx, rhs, "..");
                 let long = format!("{snip_a} = {}", sugg::make_binop(op, a, r));

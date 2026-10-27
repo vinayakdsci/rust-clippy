@@ -1,8 +1,10 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::res::MaybeDef as _;
 use clippy_utils::source::snippet_with_applicability;
-use clippy_utils::ty::is_type_lang_item;
+use clippy_utils::sym;
+use rustc_attr_ir::lang_items::LangItem;
 use rustc_errors::Applicability;
-use rustc_hir::{Expr, LangItem};
+use rustc_hir::Expr;
 use rustc_lint::LateContext;
 
 use crate::methods::method_call;
@@ -13,7 +15,7 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'_>, recv: &'tcx E
     let ty = cx.typeck_results().expr_ty(recv).peel_refs();
     let caller_type = if ty.is_str() {
         "str"
-    } else if is_type_lang_item(cx, ty, LangItem::String) {
+    } else if ty.is_lang_item(cx, LangItem::String) {
         "String"
     } else {
         return;
@@ -25,7 +27,7 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'_>, recv: &'tcx E
 
     if let Some(parent) = clippy_utils::get_parent_expr(cx, expr)
         && let Some((name, _, _, _, _)) = method_call(parent)
-        && name == "unwrap"
+        && name == sym::unwrap
     {
         span_lint_and_sugg(
             cx,
@@ -33,7 +35,7 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'_>, recv: &'tcx E
             parent.span,
             format!("called `.bytes().nth().unwrap()` on a `{caller_type}`"),
             "try",
-            format!("{receiver}.as_bytes()[{n}]",),
+            format!("{receiver}.as_bytes()[{n}]"),
             applicability,
         );
     } else {
@@ -46,5 +48,5 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'_>, recv: &'tcx E
             format!("{receiver}.as_bytes().get({n}).copied()"),
             applicability,
         );
-    };
+    }
 }

@@ -1,12 +1,12 @@
-use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::is_ty_alias;
-use hir::def::Res;
+use clippy_utils::source::SpanExt as _;
 use hir::ExprKind;
+use hir::def::Res;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
-use rustc_lint::{LateContext, LateLintPass};
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
 use rustc_middle::ty;
-use rustc_session::declare_lint_pass;
 use rustc_span::sym;
 
 declare_clippy_lint! {
@@ -44,7 +44,10 @@ declare_clippy_lint! {
     complexity,
     "unit structs can be constructed without calling `default`"
 }
-declare_lint_pass!(DefaultConstructedUnitStructs => [DEFAULT_CONSTRUCTED_UNIT_STRUCTS]);
+
+declare_lint_pass!(DefaultConstructedUnitStructs => [
+    DEFAULT_CONSTRUCTED_UNIT_STRUCTS,
+]);
 
 fn is_alias(ty: hir::Ty<'_>) -> bool {
     if let hir::TyKind::Path(ref qpath) = ty.kind {
@@ -70,16 +73,27 @@ impl LateLintPass<'_> for DefaultConstructedUnitStructs {
             && let var @ ty::VariantDef { ctor: Some((hir::def::CtorKind::Const, _)), .. } = def.non_enum_variant()
             && !var.is_field_list_non_exhaustive()
             && !expr.span.from_expansion() && !qpath.span().from_expansion()
+            // do not suggest replacing an expression by a type name with placeholders
+            && !base.is_suggestable_infer_ty()
         {
-            span_lint_and_sugg(
+            let mut removals = vec![(expr.span.with_lo(qpath.qself_span().hi()), String::new())];
+            if expr.span.check_text(cx, |s| s.starts_with('<')) {
+                // Remove `<`, '>` has already been removed by the existing removal expression.
+                removals.push((expr.span.with_hi(qpath.qself_span().lo()), String::new()));
+            }
+            span_lint_and_then(
                 cx,
                 DEFAULT_CONSTRUCTED_UNIT_STRUCTS,
-                expr.span.with_lo(qpath.qself_span().hi()),
+                expr.span,
                 "use of `default` to create a unit struct",
-                "remove this call to `default`",
-                String::new(),
-                Applicability::MachineApplicable,
+                |diag| {
+                    diag.multipart_suggestion(
+                        "remove this call to `default`",
+                        removals,
+                        Applicability::MachineApplicable,
+                    );
+                },
             );
-        };
+        }
     }
 }

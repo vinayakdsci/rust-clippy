@@ -2,10 +2,9 @@
 //@aux-build:macro_use_helper.rs
 //@aux-build:proc_macro_derive.rs
 
-//@ignore-32bit
+//@ignore-bitwidth: 32
 
-#![allow(unused_imports, unreachable_code, unused_variables, dead_code, unused_attributes)]
-#![allow(clippy::single_component_path_imports)]
+#![expect(clippy::single_component_path_imports)]
 #![warn(clippy::macro_use_imports)]
 
 #[macro_use]
@@ -16,12 +15,16 @@ extern crate proc_macro_derive as mini_mac;
 
 mod a {
     #[macro_use]
+    //~^ macro_use_imports
     use mac;
     #[macro_use]
+    //~^ macro_use_imports
     use mini_mac;
     #[macro_use]
+    //~^ macro_use_imports
     use mac::inner;
     #[macro_use]
+    //~^ macro_use_imports
     use mac::inner::nested;
 
     #[derive(ClippyMiniMacroTest)]

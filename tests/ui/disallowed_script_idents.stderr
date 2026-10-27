@@ -1,5 +1,5 @@
 error: identifier `счётчик` has a Unicode script that is not allowed by configuration: Cyrillic
-  --> tests/ui/disallowed_script_idents.rs:11:9
+  --> tests/ui/disallowed_script_idents.rs:10:9
    |
 LL |     let счётчик = 10;
    |         ^^^^^^^

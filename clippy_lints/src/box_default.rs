@@ -1,15 +1,15 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::macros::macro_backtrace;
+use clippy_utils::res::{MaybeDef as _, MaybeResPath as _};
 use clippy_utils::ty::expr_sig;
-use clippy_utils::{is_default_equivalent, path_def_id};
+use clippy_utils::{is_default_equivalent, sym};
+use rustc_attr_ir::lang_items::LangItem;
 use rustc_errors::Applicability;
 use rustc_hir::def::Res;
-use rustc_hir::intravisit::{walk_ty, Visitor};
-use rustc_hir::{Block, Expr, ExprKind, LetStmt, Node, QPath, Ty, TyKind};
-use rustc_lint::{LateContext, LateLintPass, LintContext};
-use rustc_middle::lint::in_external_macro;
-use rustc_session::declare_lint_pass;
-use rustc_span::sym;
+use rustc_hir::intravisit::{InferKind, Visitor, walk_ty};
+use rustc_hir::{AmbigArg, Block, Expr, ExprKind, HirId, LetStmt, Node, QPath, Ty, TyKind};
+use rustc_lint::{LateContext, LateLintPass, LintContext as _, declare_lint_pass};
+use rustc_span::Span;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -45,12 +45,12 @@ impl LateLintPass<'_> for BoxDefault {
             // And that method is `new`
             && seg.ident.name == sym::new
             // And the call is that of a `Box` method
-            && path_def_id(cx, ty).map_or(false, |id| Some(id) == cx.tcx.lang_items().owned_box())
+            && ty.basic_res().is_lang_item(cx, LangItem::OwnedBox)
             // And the single argument to the call is another function call
-            // This is the `T::default()` of `Box::new(T::default())`
+            // This is the `T::default()` (or default equivalent) of `Box::new(T::default())`
             && let ExprKind::Call(arg_path, _) = arg.kind
             // And we are not in a foreign crate's macro
-            && !in_external_macro(cx.sess(), expr.span)
+            && !expr.span.in_external_macro(cx.sess().source_map())
             // And the argument expression has the same context as the outer call expression
             // or that we are inside a `vec!` macro expansion
             && (expr.span.eq_ctxt(arg.span) || is_local_vec_expn(cx, arg, expr))
@@ -83,17 +83,22 @@ fn is_plain_default(cx: &LateContext<'_>, arg_path: &Expr<'_>) -> bool {
 }
 
 fn is_local_vec_expn(cx: &LateContext<'_>, expr: &Expr<'_>, ref_expr: &Expr<'_>) -> bool {
-    macro_backtrace(expr.span).next().map_or(false, |call| {
-        cx.tcx.is_diagnostic_item(sym::vec_macro, call.def_id) && call.span.eq_ctxt(ref_expr.span)
-    })
+    macro_backtrace(expr.span)
+        .next()
+        .is_some_and(|call| cx.tcx.is_diagnostic_item(sym::vec_macro, call.def_id) && call.span.eq_ctxt(ref_expr.span))
 }
 
 #[derive(Default)]
 struct InferVisitor(bool);
 
-impl<'tcx> Visitor<'tcx> for InferVisitor {
-    fn visit_ty(&mut self, t: &Ty<'_>) {
-        self.0 |= matches!(t.kind, TyKind::Infer | TyKind::OpaqueDef(..) | TyKind::TraitObject(..));
+impl Visitor<'_> for InferVisitor {
+    fn visit_infer(&mut self, inf_id: HirId, _inf_span: Span, _kind: InferKind<'_>) -> Self::Result {
+        self.0 = true;
+        self.visit_id(inf_id);
+    }
+
+    fn visit_ty(&mut self, t: &Ty<'_, AmbigArg>) {
+        self.0 |= matches!(t.kind, TyKind::OpaqueDef(..) | TyKind::TraitObject(..));
         if !self.0 {
             walk_ty(self, t);
         }
@@ -104,7 +109,7 @@ fn given_type(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     match cx.tcx.parent_hir_node(expr.hir_id) {
         Node::LetStmt(LetStmt { ty: Some(ty), .. }) => {
             let mut v = InferVisitor::default();
-            v.visit_ty(ty);
+            v.visit_ty_unambig(ty);
             !v.0
         },
         Node::Expr(Expr {

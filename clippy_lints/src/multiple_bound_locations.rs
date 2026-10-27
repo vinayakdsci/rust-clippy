@@ -1,12 +1,11 @@
 use rustc_ast::visit::FnKind;
-use rustc_ast::{NodeId, WherePredicate};
+use rustc_ast::{Fn, NodeId, WherePredicateKind};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_lint::{EarlyContext, EarlyLintPass};
-use rustc_session::declare_lint_pass;
+use rustc_lint::{EarlyContext, EarlyLintPass, declare_lint_pass};
 use rustc_span::Span;
 
 use clippy_utils::diagnostics::span_lint;
-use clippy_utils::source::SpanRangeExt;
+use clippy_utils::source::SpanExt as _;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -31,7 +30,7 @@ declare_clippy_lint! {
     /// ```
     #[clippy::version = "1.78.0"]
     pub MULTIPLE_BOUND_LOCATIONS,
-    suspicious,
+    style,
     "defining generic bounds in multiple locations"
 }
 
@@ -39,7 +38,7 @@ declare_lint_pass!(MultipleBoundLocations => [MULTIPLE_BOUND_LOCATIONS]);
 
 impl EarlyLintPass for MultipleBoundLocations {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, kind: FnKind<'_>, _: Span, _: NodeId) {
-        if let FnKind::Fn(_, _, _, _, generics, _) = kind
+        if let FnKind::Fn(_, _, Fn { generics, .. }) = kind
             && !generics.params.is_empty()
             && !generics.where_clause.predicates.is_empty()
         {
@@ -47,12 +46,12 @@ impl EarlyLintPass for MultipleBoundLocations {
 
             for param in &generics.params {
                 if !param.bounds.is_empty() {
-                    generic_params_with_bounds.insert(param.ident.name.as_str(), param.ident.span);
+                    generic_params_with_bounds.insert(param.ident.as_str(), param.ident.span);
                 }
             }
             for clause in &generics.where_clause.predicates {
-                match clause {
-                    WherePredicate::BoundPredicate(pred) => {
+                match &clause.kind {
+                    WherePredicateKind::BoundPredicate(pred) => {
                         if (!pred.bound_generic_params.is_empty() || !pred.bounds.is_empty())
                             && let Some(Some(bound_span)) = pred
                                 .bounded_ty
@@ -62,14 +61,13 @@ impl EarlyLintPass for MultipleBoundLocations {
                             emit_lint(cx, *bound_span, pred.bounded_ty.span);
                         }
                     },
-                    WherePredicate::RegionPredicate(pred) => {
+                    WherePredicateKind::RegionPredicate(pred) => {
                         if !pred.bounds.is_empty()
-                            && let Some(bound_span) = generic_params_with_bounds.get(&pred.lifetime.ident.name.as_str())
+                            && let Some(bound_span) = generic_params_with_bounds.get(&pred.lifetime.ident.as_str())
                         {
                             emit_lint(cx, *bound_span, pred.lifetime.ident.span);
                         }
                     },
-                    WherePredicate::EqPredicate(_) => {},
                 }
             }
         }

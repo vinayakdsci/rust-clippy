@@ -1,9 +1,11 @@
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::snippet_with_applicability;
 use clippy_utils::sugg::Sugg;
-use clippy_utils::{expr_use_ctxt, is_no_std_crate, ExprUseNode};
+use clippy_utils::{
+    ExprUseNode, get_expr_use_site, is_expr_temporary_value, is_inside_always_const_context, std_or_core,
+};
 use rustc_errors::Applicability;
-use rustc_hir::{Expr, Mutability, Ty, TyKind};
+use rustc_hir::{Expr, ExprKind, Mutability, Ty, TyKind};
 use rustc_lint::LateContext;
 use rustc_middle::ty;
 
@@ -22,11 +24,18 @@ pub(super) fn check<'tcx>(
 
     if matches!(cast_from.kind(), ty::Ref(..))
         && let ty::RawPtr(_, to_mutbl) = cast_to.kind()
-        && let use_cx = expr_use_ctxt(cx, expr)
-        // TODO: only block the lint if `cast_expr` is a temporary
-        && !matches!(use_cx.use_node(cx), ExprUseNode::LetStmt(_) | ExprUseNode::ConstStatic(_))
+        && let Some(std_or_core) = std_or_core(cx)
     {
-        let core_or_std = if is_no_std_crate(cx) { "core" } else { "std" };
+        if let ExprKind::AddrOf(_, _, addr_inner) = cast_expr.kind
+            && is_expr_temporary_value(cx, addr_inner)
+            && (matches!(
+                get_expr_use_site(cx.tcx, cx.typeck_results(), expr.span.ctxt(), expr).use_node(cx),
+                ExprUseNode::LetStmt(_) | ExprUseNode::ConstStatic(_)
+            ) || is_inside_always_const_context(cx.tcx, expr.hir_id))
+        {
+            return;
+        }
+
         let fn_name = match to_mutbl {
             Mutability::Not => "from_ref",
             Mutability::Mut => "from_mut",
@@ -34,14 +43,14 @@ pub(super) fn check<'tcx>(
 
         let mut app = Applicability::MachineApplicable;
         let turbofish = match &cast_to_hir_ty.kind {
-            TyKind::Infer => String::new(),
-            TyKind::Ptr(mut_ty) => {
-                if matches!(mut_ty.ty.kind, TyKind::Infer) {
+            TyKind::Infer(()) => String::new(),
+            TyKind::Ptr(inner_ty, _) => {
+                if matches!(inner_ty.kind, TyKind::Infer(())) {
                     String::new()
                 } else {
                     format!(
                         "::<{}>",
-                        snippet_with_applicability(cx, mut_ty.ty.span, "/* type */", &mut app)
+                        snippet_with_applicability(cx, inner_ty.span, "/* type */", &mut app)
                     )
                 }
             },
@@ -56,7 +65,7 @@ pub(super) fn check<'tcx>(
             expr.span,
             "reference as raw pointer",
             "try",
-            format!("{core_or_std}::ptr::{fn_name}{turbofish}({cast_expr_sugg})"),
+            format!("{std_or_core}::ptr::{fn_name}{turbofish}({cast_expr_sugg})"),
             app,
         );
     }

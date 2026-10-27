@@ -1,11 +1,11 @@
 error: called `skip(..).next()` on an iterator
-  --> tests/ui/iter_skip_next_unfixable.rs:9:26
+  --> tests/ui/iter_skip_next_unfixable.rs:8:26
    |
 LL |     let _: Vec<&str> = sp.skip(1).next().unwrap().split(' ').collect();
    |                          ^^^^^^^^^^^^^^^ help: use `nth` instead: `.nth(1)`
    |
 help: for this change `sp` has to be mutable
-  --> tests/ui/iter_skip_next_unfixable.rs:8:9
+  --> tests/ui/iter_skip_next_unfixable.rs:7:9
    |
 LL |     let sp = test_string.split('|').map(|s| s.trim());
    |         ^^

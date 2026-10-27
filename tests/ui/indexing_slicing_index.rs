@@ -1,16 +1,10 @@
-//@compile-flags: -Zdeduplicate-diagnostics=yes
 //@aux-build: proc_macros.rs
 
 #![warn(clippy::indexing_slicing)]
 // We also check the out_of_bounds_indexing lint here, because it lints similar things and
-// we want to avoid false positives.
-#![warn(clippy::out_of_bounds_indexing)]
-#![allow(
-    unconditional_panic,
-    clippy::no_effect,
-    clippy::unnecessary_operation,
-    clippy::useless_vec
-)]
+// we want to avoid false positives. This needs to be cleaned up after <https://github.com/rust-lang/rust-clippy/issues/17117> is fixed.
+#![deny(clippy::out_of_bounds_indexing)]
+#![expect(clippy::no_effect, clippy::unnecessary_operation, clippy::useless_vec)]
 
 extern crate proc_macros;
 use proc_macros::with_span;
@@ -49,8 +43,10 @@ fn main() {
     //~^ ERROR: indexing may panic
     // Ok, let rustc's `unconditional_panic` lint handle `usize` indexing on arrays.
     x[4];
+    //~^ out_of_bounds_indexing
     // Ok, let rustc's `unconditional_panic` lint handle `usize` indexing on arrays.
     x[1 << 3];
+    //~^ out_of_bounds_indexing
 
     // Ok, should not produce stderr.
     x[0];
@@ -72,6 +68,7 @@ fn main() {
     y[0];
     // Ok, rustc will handle references too.
     y[4];
+    //~^ out_of_bounds_indexing
 
     let v = vec![0; 5];
     v[0];
@@ -87,6 +84,7 @@ fn main() {
     const M: usize = 3;
     // Ok, let rustc's `unconditional_panic` lint handle `usize` indexing on arrays.
     x[N];
+    //~^ out_of_bounds_indexing
     // Ok, should not produce stderr.
     x[M];
     v[N];
@@ -96,4 +94,5 @@ fn main() {
 
     let slice = &x;
     let _ = x[4];
+    //~^ out_of_bounds_indexing
 }

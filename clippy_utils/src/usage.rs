@@ -1,5 +1,7 @@
-use crate::visitors::{for_each_expr, for_each_expr_without_closures, Descend, Visitable};
-use crate::{self as utils, get_enclosing_loop_or_multi_call_closure};
+use crate::macros::root_macro_call_first_node;
+use crate::res::MaybeResPath as _;
+use crate::visitors::{Descend, Visitable, for_each_expr, for_each_expr_without_closures};
+use crate::{self as utils, get_enclosing_loop_or_multi_call_closure, sym};
 use core::ops::ControlFlow;
 use hir::def::Res;
 use rustc_hir::intravisit::{self, Visitor};
@@ -26,10 +28,13 @@ pub fn mutated_variables<'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'tcx>) -> 
     Some(delegate.used_mutably)
 }
 
+/// Checks whether it is possible that the given variable is mutated within the given
+/// [`Expr`].
 pub fn is_potentially_mutated<'tcx>(variable: HirId, expr: &'tcx Expr<'_>, cx: &LateContext<'tcx>) -> bool {
-    mutated_variables(expr, cx).map_or(true, |mutated| mutated.contains(&variable))
+    mutated_variables(expr, cx).is_none_or(|mutated| mutated.contains(&variable))
 }
 
+/// Checks whether it is possible that the given [Place] is the given local.
 pub fn is_potentially_local_place(local_id: HirId, place: &Place<'_>) -> bool {
     match place.base {
         PlaceBase::Local(id) => id == local_id,
@@ -46,8 +51,8 @@ struct MutVarsDelegate {
     skip: bool,
 }
 
-impl<'tcx> MutVarsDelegate {
-    fn update(&mut self, cat: &PlaceWithHirId<'tcx>) {
+impl MutVarsDelegate {
+    fn update(&mut self, cat: &PlaceWithHirId<'_>) {
         match cat.place.base {
             PlaceBase::Local(id) => {
                 self.used_mutably.insert(id);
@@ -66,8 +71,10 @@ impl<'tcx> MutVarsDelegate {
 impl<'tcx> Delegate<'tcx> for MutVarsDelegate {
     fn consume(&mut self, _: &PlaceWithHirId<'tcx>, _: HirId) {}
 
+    fn use_cloned(&mut self, _: &PlaceWithHirId<'tcx>, _: HirId) {}
+
     fn borrow(&mut self, cmt: &PlaceWithHirId<'tcx>, _: HirId, bk: ty::BorrowKind) {
-        if bk == ty::BorrowKind::MutBorrow {
+        if bk == ty::BorrowKind::Mutable {
             self.update(cmt);
         }
     }
@@ -79,7 +86,9 @@ impl<'tcx> Delegate<'tcx> for MutVarsDelegate {
     fn fake_read(&mut self, _: &PlaceWithHirId<'tcx>, _: FakeReadCause, _: HirId) {}
 }
 
+/// A [`Visitor`] that collects all [`HirId`s](HirId) bound by visited [patterns](hir::Pat).
 pub struct ParamBindingIdCollector {
+    /// [`HirId`s](HirId) collected during calls to [`visit_pat`](Self::visit_pat).
     pub binding_hir_ids: Vec<HirId>,
 }
 impl<'tcx> ParamBindingIdCollector {
@@ -106,44 +115,81 @@ impl<'tcx> Visitor<'tcx> for ParamBindingIdCollector {
     }
 }
 
+/// A [`Visitor`] providing [`are_params_used()`](Self::are_params_used), which can be used to check
+/// parameter binding usage within a [`Body`](hir::Body).
 pub struct BindingUsageFinder<'a, 'tcx> {
     cx: &'a LateContext<'tcx>,
     binding_ids: Vec<HirId>,
-    usage_found: bool,
 }
 impl<'a, 'tcx> BindingUsageFinder<'a, 'tcx> {
+    /// Checks whether the parameter bindings of the given [`Body`](hir::Body) are used within it.
     pub fn are_params_used(cx: &'a LateContext<'tcx>, body: &'tcx hir::Body<'tcx>) -> bool {
         let mut finder = BindingUsageFinder {
             cx,
             binding_ids: ParamBindingIdCollector::collect_binding_hir_ids(body),
-            usage_found: false,
         };
-        finder.visit_body(body);
-        finder.usage_found
+        finder.visit_body(body).is_break()
     }
 }
-impl<'a, 'tcx> Visitor<'tcx> for BindingUsageFinder<'a, 'tcx> {
+impl<'tcx> Visitor<'tcx> for BindingUsageFinder<'_, 'tcx> {
+    type Result = ControlFlow<()>;
     type NestedFilter = nested_filter::OnlyBodies;
 
-    fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
-        if !self.usage_found {
-            intravisit::walk_expr(self, expr);
+    fn visit_path(&mut self, path: &hir::Path<'tcx>, _: HirId) -> Self::Result {
+        if let Res::Local(id) = path.res
+            && self.binding_ids.contains(&id)
+        {
+            return ControlFlow::Break(());
         }
+
+        ControlFlow::Continue(())
     }
 
-    fn visit_path(&mut self, path: &hir::Path<'tcx>, _: HirId) {
-        if let Res::Local(id) = path.res {
-            if self.binding_ids.contains(&id) {
-                self.usage_found = true;
-            }
-        }
-    }
-
-    fn nested_visit_map(&mut self) -> Self::Map {
-        self.cx.tcx.hir()
+    fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+        self.cx.tcx
     }
 }
 
+/// Checks if the given expression is a macro call to `todo!()` or `unimplemented!()`.
+pub fn is_todo_unimplemented_macro(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
+    root_macro_call_first_node(cx, expr)
+        .and_then(|macro_call| cx.tcx.get_diagnostic_name(macro_call.def_id))
+        .is_some_and(|macro_name| matches!(macro_name, sym::todo_macro | sym::unimplemented_macro))
+}
+
+/// Checks if the given expression is a stub, i.e., a `todo!()` or `unimplemented!()` expression,
+/// or a block whose last expression is a `todo!()` or `unimplemented!()`.
+pub fn is_todo_unimplemented_stub(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
+    if let ExprKind::Block(block, _) = expr.kind {
+        if let Some(last_expr) = block.expr {
+            return is_todo_unimplemented_macro(cx, last_expr);
+        }
+
+        return block.stmts.last().is_some_and(|stmt| {
+            if let hir::StmtKind::Expr(expr) | hir::StmtKind::Semi(expr) = stmt.kind {
+                return is_todo_unimplemented_macro(cx, expr);
+            }
+            false
+        });
+    }
+
+    is_todo_unimplemented_macro(cx, expr)
+}
+
+/// Checks if the given expression contains macro call to `todo!()` or `unimplemented!()`.
+pub fn contains_todo_unimplement_macro(cx: &LateContext<'_>, expr: &'_ Expr<'_>) -> bool {
+    for_each_expr_without_closures(expr, |e| {
+        if is_todo_unimplemented_macro(cx, e) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .is_some()
+}
+
+/// Checks whether the given expression contains `return`, `break`, `continue`, or a macro call
+/// (which may itself contain any of those expressions).
 pub fn contains_return_break_continue_macro(expression: &Expr<'_>) -> bool {
     for_each_expr_without_closures(expression, |e| {
         match e.kind {
@@ -158,9 +204,10 @@ pub fn contains_return_break_continue_macro(expression: &Expr<'_>) -> bool {
     .is_some()
 }
 
+/// Checks whether the given [`Visitable`] (ex. an [`Expr`]) contains the given local.
 pub fn local_used_in<'tcx>(cx: &LateContext<'tcx>, local_id: HirId, v: impl Visitable<'tcx>) -> bool {
-    for_each_expr(cx, v, |e| {
-        if utils::path_to_local_id(e, local_id) {
+    for_each_expr(cx.tcx, v, |e| {
+        if e.res_local_id() == Some(local_id) {
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -169,6 +216,7 @@ pub fn local_used_in<'tcx>(cx: &LateContext<'tcx>, local_id: HirId, v: impl Visi
     .is_some()
 }
 
+/// Checks whether the given local is used after the given [`Expr`].
 pub fn local_used_after_expr(cx: &LateContext<'_>, local_id: HirId, after: &Expr<'_>) -> bool {
     let Some(block) = utils::get_enclosing_block(cx, local_id) else {
         return false;
@@ -184,9 +232,9 @@ pub fn local_used_after_expr(cx: &LateContext<'_>, local_id: HirId, after: &Expr
     let loop_start = get_enclosing_loop_or_multi_call_closure(cx, after).map(|e| e.hir_id);
 
     let mut past_expr = false;
-    for_each_expr(cx, block, |e| {
+    for_each_expr(cx.tcx, block, |e| {
         if past_expr {
-            if utils::path_to_local_id(e, local_id) {
+            if e.res_local_id() == Some(local_id) {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(Descend::Yes)

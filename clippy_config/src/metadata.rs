@@ -1,121 +1,58 @@
-use std::fmt::{self, Write};
+use itertools::Itertools as _;
+use std::fmt::{self, Display};
 
-#[derive(Debug, Clone, Default)]
-pub struct ClippyConfiguration {
-    pub name: String,
+pub struct ConfMetadata {
+    pub name: &'static str,
     pub default: String,
-    pub lints: Vec<String>,
-    pub doc: String,
-    pub deprecation_reason: Option<&'static str>,
+    pub lints: &'static [&'static str],
+    pub doc: &'static str,
+    pub renamed_to: Option<&'static str>,
 }
 
-impl fmt::Display for ClippyConfiguration {
+impl Display for ConfMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "- `{}`: {}", self.name, self.doc)?;
         if !self.default.is_empty() {
-            write!(f, " (default: `{}`)", self.default)?;
+            write!(f, "\n\n   (default: `{}`)", self.default)?;
         }
         Ok(())
     }
 }
 
-impl ClippyConfiguration {
-    pub fn new(
-        name: &'static str,
-        default: String,
-        doc_comment: &'static str,
-        deprecation_reason: Option<&'static str>,
-    ) -> Self {
-        let (mut lints, doc) = parse_config_field_doc(doc_comment)
-            .unwrap_or_else(|| (vec![], "[ERROR] MALFORMED DOC COMMENT".to_string()));
-
-        lints.sort();
-
-        Self {
-            name: to_kebab(name),
-            lints,
-            doc,
-            default,
-            deprecation_reason,
+impl ConfMetadata {
+    pub fn display_markdown_paragraph(&self) -> impl '_ + Display {
+        struct S<'a>(&'a ConfMetadata);
+        impl Display for S<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(
+                    f,
+                    "## `{}`\n{}\n\n**Default Value:** `{}`\n\n---\n**Affected lints:**\n{}\n\n",
+                    self.0.name,
+                    self.0
+                        .doc
+                        .lines()
+                        .format_with("\n", |doc, f| f(&doc.strip_prefix(" ").unwrap_or(doc))),
+                    self.0.default,
+                    self.0.lints.iter().format_with("\n", |name, f| f(&format_args!(
+                        "* [`{name}`](https://clippy.rust-lang.org/main/index.html#{name})"
+                    ))),
+                )
+            }
         }
+        S(self)
     }
 
-    pub fn to_markdown_paragraph(&self) -> String {
-        let mut out = format!(
-            "## `{}`\n{}\n\n",
-            self.name,
-            self.doc
-                .lines()
-                .map(|line| line.strip_prefix("    ").unwrap_or(line))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-
-        if !self.default.is_empty() {
-            write!(out, "**Default Value:** `{}`\n\n", self.default).unwrap();
+    pub fn display_markdown_link(&self) -> impl '_ + Display {
+        struct S<'a>(&'a ConfMetadata);
+        impl Display for S<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(
+                    f,
+                    "[`{}`]: https://doc.rust-lang.org/clippy/lint_configuration.html#{}",
+                    self.0.name, self.0.name,
+                )
+            }
         }
-
-        write!(
-            out,
-            "---\n**Affected lints:**\n{}\n\n",
-            self.lints
-                .iter()
-                .map(|name| name.to_string().split_whitespace().next().unwrap().to_string())
-                .map(|name| format!("* [`{name}`](https://rust-lang.github.io/rust-clippy/master/index.html#{name})"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-        .unwrap();
-
-        out
+        S(self)
     }
-
-    pub fn to_markdown_link(&self) -> String {
-        const BOOK_CONFIGS_PATH: &str = "https://doc.rust-lang.org/clippy/lint_configuration.html";
-        format!("[`{}`]: {BOOK_CONFIGS_PATH}#{}", self.name, self.name)
-    }
-}
-
-/// This parses the field documentation of the config struct.
-///
-/// ```rust, ignore
-/// parse_config_field_doc(cx, "Lint: LINT_NAME_1, LINT_NAME_2. Papa penguin, papa penguin")
-/// ```
-///
-/// Would yield:
-/// ```rust, ignore
-/// Some(["lint_name_1", "lint_name_2"], "Papa penguin, papa penguin")
-/// ```
-fn parse_config_field_doc(doc_comment: &str) -> Option<(Vec<String>, String)> {
-    const DOC_START: &str = " Lint: ";
-    if doc_comment.starts_with(DOC_START)
-        && let Some(split_pos) = doc_comment.find('.')
-    {
-        let mut doc_comment = doc_comment.to_string();
-        let mut documentation = doc_comment.split_off(split_pos);
-
-        // Extract lints
-        doc_comment.make_ascii_lowercase();
-        let lints: Vec<String> = doc_comment
-            .split_off(DOC_START.len())
-            .lines()
-            .next()
-            .unwrap()
-            .split(", ")
-            .map(str::to_string)
-            .collect();
-
-        // Format documentation correctly
-        // split off leading `.` from lint name list and indent for correct formatting
-        documentation = documentation.trim_start_matches('.').trim().replace("\n ", "\n    ");
-
-        Some((lints, documentation))
-    } else {
-        None
-    }
-}
-
-/// Transforms a given `snake_case_string` to a tasty `kebab-case-string`
-fn to_kebab(config_name: &str) -> String {
-    config_name.replace('_', "-")
 }

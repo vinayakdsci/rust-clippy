@@ -1,12 +1,17 @@
-#![warn(clippy::all, clippy::pedantic)]
+#![warn(clippy::filter_map_next)]
 
 fn main() {
     let a = ["1", "lol", "3", "NaN", "5"];
 
+    let element: Option<i32> = a.iter().filter_map(|s| s.parse().ok()).next();
+    //~^ filter_map_next
+    assert_eq!(element, Some(1));
+
     #[rustfmt::skip]
     let _: Option<u32> = vec![1, 2, 3, 4, 5, 6]
-    //~^ ERROR: called `filter_map(..).next()` on an `Iterator`. This is more succinctly e
-    //~| NOTE: `-D clippy::filter-map-next` implied by `-D warnings`
+    //~^ filter_map_next
+
+
         .into_iter()
         .filter_map(|x| {
             if x == 2 {
@@ -16,4 +21,27 @@ fn main() {
             }
         })
         .next();
+
+    let element: Option<i32> = a
+        // very important comment -- don't delete!
+        .iter()
+        .filter_map(|s| {
+            // another extremely important comment
+            s.parse().ok()
+        })
+        .next();
+    //~^^^^^^^^ filter_map_next
+}
+
+#[clippy::msrv = "1.29"]
+fn msrv_1_29() {
+    let a = ["1", "lol", "3", "NaN", "5"];
+    let _: Option<i32> = a.iter().filter_map(|s| s.parse().ok()).next();
+}
+
+#[clippy::msrv = "1.30"]
+fn msrv_1_30() {
+    let a = ["1", "lol", "3", "NaN", "5"];
+    let _: Option<i32> = a.iter().filter_map(|s| s.parse().ok()).next();
+    //~^ filter_map_next
 }

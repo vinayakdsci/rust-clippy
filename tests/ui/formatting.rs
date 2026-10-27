@@ -1,9 +1,4 @@
-#![warn(clippy::all)]
-#![allow(unused_variables)]
-#![allow(unused_assignments)]
-#![allow(clippy::if_same_then_else)]
-#![allow(clippy::deref_addrof)]
-#![allow(clippy::nonminimal_bool)]
+#![expect(clippy::deref_addrof)]
 
 fn foo() -> bool {
     true
@@ -14,16 +9,19 @@ fn main() {
     // weird op_eq formatting:
     let mut a = 42;
     a =- 35;
-    //~^ ERROR: this looks like you are trying to use `.. -= ..`, but you really are doing
-    //~| NOTE: to remove this lint, use either `-=` or `= -`
+    //~^ suspicious_assignment_formatting
+
+
     a =* &191;
-    //~^ ERROR: this looks like you are trying to use `.. *= ..`, but you really are doing
-    //~| NOTE: to remove this lint, use either `*=` or `= *`
+    //~^ suspicious_assignment_formatting
+
+
 
     let mut b = true;
     b =! false;
-    //~^ ERROR: this looks like you are trying to use `.. != ..`, but you really are doing
-    //~| NOTE: to remove this lint, use either `!=` or `= !`
+    //~^ suspicious_assignment_formatting
+
+
 
     // those are ok:
     a = -35;
@@ -33,14 +31,16 @@ fn main() {
     // possible missing comma in an array
     let _ = &[
         -1, -2, -3 // <= no comma here
-        //~^ ERROR: possibly missing a comma here
-        //~| NOTE: to remove this lint, add a comma or write the expr in a single line
+        //~^ possible_missing_comma
+
+
         -4, -5, -6
     ];
     let _ = &[
         -1, -2, -3 // <= no comma here
-        //~^ ERROR: possibly missing a comma here
-        //~| NOTE: to remove this lint, add a comma or write the expr in a single line
+        //~^ possible_missing_comma
+
+
         *4, -5, -6
     ];
 
@@ -78,8 +78,9 @@ fn main() {
     // lint if it doesn't
     let _ = &[
         -1
-        //~^ ERROR: possibly missing a comma here
-        //~| NOTE: to remove this lint, add a comma or write the expr in a single line
+        //~^ possible_missing_comma
+
+
         -4,
     ];
 }

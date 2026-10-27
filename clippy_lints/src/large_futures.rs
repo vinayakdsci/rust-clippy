@@ -1,11 +1,13 @@
+use clippy_config::Conf;
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::snippet;
 use clippy_utils::ty::implements_trait;
+use rustc_abi::Size;
+use rustc_attr_ir::lang_items::LangItem;
 use rustc_errors::Applicability;
-use rustc_hir::{Expr, ExprKind, LangItem, MatchSource, QPath};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::impl_lint_pass;
-use rustc_target::abi::Size;
+use rustc_hir::{Expr, ExprKind, MatchSource};
+use rustc_lint::{LateContext, LateLintPass, impl_lint_pass};
+use rustc_middle::ty;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -39,44 +41,51 @@ declare_clippy_lint! {
     "large future may lead to unexpected stack overflows"
 }
 
-#[derive(Copy, Clone)]
+impl_lint_pass!(LargeFuture => [LARGE_FUTURES]);
+
 pub struct LargeFuture {
     future_size_threshold: u64,
 }
 
 impl LargeFuture {
-    pub fn new(future_size_threshold: u64) -> Self {
-        Self { future_size_threshold }
+    pub fn new(conf: &'static Conf) -> Self {
+        Self {
+            future_size_threshold: conf.future_size_threshold,
+        }
     }
 }
 
-impl_lint_pass!(LargeFuture => [LARGE_FUTURES]);
-
 impl<'tcx> LateLintPass<'tcx> for LargeFuture {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
-        if matches!(expr.span.ctxt().outer_expn_data().kind, rustc_span::ExpnKind::Macro(..)) {
-            return;
-        }
-        if let ExprKind::Match(expr, _, MatchSource::AwaitDesugar) = expr.kind {
-            if let ExprKind::Call(func, [expr, ..]) = expr.kind
-                && let ExprKind::Path(QPath::LangItem(LangItem::IntoFutureIntoFuture, ..)) = func.kind
-                && let ty = cx.typeck_results().expr_ty(expr)
-                && let Some(future_trait_def_id) = cx.tcx.lang_items().future_trait()
-                && implements_trait(cx, ty, future_trait_def_id, &[])
-                && let Ok(layout) = cx.tcx.layout_of(cx.param_env.and(ty))
-                && let size = layout.layout.size()
-                && size >= Size::from_bytes(self.future_size_threshold)
-            {
-                span_lint_and_sugg(
-                    cx,
-                    LARGE_FUTURES,
-                    expr.span,
-                    format!("large future with a size of {} bytes", size.bytes()),
-                    "consider `Box::pin` on it",
-                    format!("Box::pin({})", snippet(cx, expr.span, "..")),
-                    Applicability::Unspecified,
-                );
-            }
+        if let ExprKind::Match(scrutinee, _, MatchSource::AwaitDesugar) = expr.kind
+            && let ExprKind::Call(func, [arg]) = scrutinee.kind
+            && let ExprKind::Path(qpath) = func.kind
+            && cx.tcx.qpath_is_lang_item(qpath, LangItem::IntoFutureIntoFuture)
+            && !expr.span.from_expansion()
+            && let ty = cx.typeck_results().expr_ty(arg)
+            && let Some(future_trait_def_id) = cx.tcx.lang_items().future_trait()
+            && implements_trait(cx, ty, future_trait_def_id, &[])
+            && let ty::PseudoCanonicalInput { typing_env, value: ty } = cx
+                .typing_env()
+                .with_codegen_normalized_invalidating_rigid_aliases(cx.tcx, ty)
+            // Aliases that were rigid during type checking can be revealed in codegen mode.
+            && let Ok(ty) = cx.tcx.try_normalize_erasing_regions(
+                typing_env,
+                ty::Unnormalized::new_wip(ty),
+            )
+            && let Ok(layout) = cx.tcx.layout_of(typing_env.as_query_input(ty))
+            && let size = layout.layout.size()
+            && size >= Size::from_bytes(self.future_size_threshold)
+        {
+            span_lint_and_sugg(
+                cx,
+                LARGE_FUTURES,
+                arg.span,
+                format!("large future with a size of {} bytes", size.bytes()),
+                "consider `Box::pin` on it",
+                format!("Box::pin({})", snippet(cx, arg.span, "..")),
+                Applicability::Unspecified,
+            );
         }
     }
 }

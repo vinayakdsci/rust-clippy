@@ -1,8 +1,8 @@
 use clippy_utils::diagnostics::span_lint_and_then;
+use clippy_utils::usage::local_used_after_expr;
 use rustc_errors::Applicability;
-use rustc_hir::{BindingMode, Mutability, Node, Pat, PatKind};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::declare_lint_pass;
+use rustc_hir::{self as hir, BindingMode, ExprKind, Mutability, Node, Pat, PatKind, Pinnedness, QPath};
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -37,84 +37,145 @@ declare_lint_pass!(NeedlessBorrowedRef => [NEEDLESS_BORROWED_REFERENCE]);
 
 impl<'tcx> LateLintPass<'tcx> for NeedlessBorrowedRef {
     fn check_pat(&mut self, cx: &LateContext<'tcx>, ref_pat: &'tcx Pat<'_>) {
-        if ref_pat.span.from_expansion() {
-            // OK, simple enough, lints doesn't check in macro.
-            return;
-        }
-
-        // Do not lint patterns that are part of an OR `|` pattern, the binding mode must match in all arms
-        for (_, node) in cx.tcx.hir().parent_iter(ref_pat.hir_id) {
-            let Node::Pat(pat) = node else { break };
-
-            if matches!(pat.kind, PatKind::Or(_)) {
-                return;
+        if let PatKind::Ref(pat, Pinnedness::Not, Mutability::Not) = ref_pat.kind
+            && !ref_pat.span.from_expansion()
+            && cx
+                .tcx
+                .hir_parent_iter(ref_pat.hir_id)
+                .map_while(|(_, parent)| if let Node::Pat(pat) = parent { Some(pat) } else { None })
+                // Do not lint patterns that are part of an OR `|` pattern, the binding mode must match in all arms
+                .all(|pat| !matches!(pat.kind, PatKind::Or(_)))
+        {
+            match pat.kind {
+                // Check sub_pat got a `ref` keyword (excluding `ref mut`).
+                PatKind::Binding(BindingMode::REF, _, ident, None) => {
+                    span_lint_and_then(
+                        cx,
+                        NEEDLESS_BORROWED_REFERENCE,
+                        ref_pat.span,
+                        "this pattern takes a reference on something that is being dereferenced",
+                        |diag| {
+                            // `&ref ident`
+                            //  ^^^^^
+                            let span = ref_pat.span.until(ident.span);
+                            diag.span_suggestion_verbose(
+                                span,
+                                "try removing the `&ref` part",
+                                String::new(),
+                                Applicability::MachineApplicable,
+                            );
+                        },
+                    );
+                },
+                // Slices where each element is `ref`: `&[ref a, ref b, ..., ref z]`
+                PatKind::Slice(
+                    before,
+                    None
+                    | Some(Pat {
+                        kind: PatKind::Wild, ..
+                    }),
+                    after,
+                ) => {
+                    check_subpatterns(
+                        cx,
+                        "dereferencing a slice pattern where every element takes a reference",
+                        ref_pat,
+                        pat,
+                        itertools::chain(before, after),
+                    );
+                },
+                PatKind::Tuple(subpatterns, _) | PatKind::TupleStruct(_, subpatterns, _) => {
+                    check_subpatterns(
+                        cx,
+                        "dereferencing a tuple pattern where every element takes a reference",
+                        ref_pat,
+                        pat,
+                        subpatterns,
+                    );
+                },
+                PatKind::Struct(_, fields, _) => {
+                    check_subpatterns(
+                        cx,
+                        "dereferencing a struct pattern where every field's pattern takes a reference",
+                        ref_pat,
+                        pat,
+                        fields.iter().map(|field| field.pat),
+                    );
+                },
+                _ => {},
             }
         }
 
-        // Only lint immutable refs, because `&mut ref T` may be useful.
-        let PatKind::Ref(pat, Mutability::Not) = ref_pat.kind else {
-            return;
-        };
-
-        match pat.kind {
-            // Check sub_pat got a `ref` keyword (excluding `ref mut`).
-            PatKind::Binding(BindingMode::REF, _, ident, None) => {
-                span_lint_and_then(
-                    cx,
-                    NEEDLESS_BORROWED_REFERENCE,
-                    ref_pat.span,
-                    "this pattern takes a reference on something that is being dereferenced",
-                    |diag| {
-                        // `&ref ident`
-                        //  ^^^^^
-                        let span = ref_pat.span.until(ident.span);
-                        diag.span_suggestion_verbose(
-                            span,
-                            "try removing the `&ref` part",
-                            String::new(),
-                            Applicability::MachineApplicable,
-                        );
-                    },
-                );
-            },
-            // Slices where each element is `ref`: `&[ref a, ref b, ..., ref z]`
-            PatKind::Slice(
-                before,
-                None
-                | Some(Pat {
-                    kind: PatKind::Wild, ..
-                }),
-                after,
-            ) => {
-                check_subpatterns(
-                    cx,
-                    "dereferencing a slice pattern where every element takes a reference",
-                    ref_pat,
-                    pat,
-                    itertools::chain(before, after),
-                );
-            },
-            PatKind::Tuple(subpatterns, _) | PatKind::TupleStruct(_, subpatterns, _) => {
-                check_subpatterns(
-                    cx,
-                    "dereferencing a tuple pattern where every element takes a reference",
-                    ref_pat,
-                    pat,
-                    subpatterns,
-                );
-            },
-            PatKind::Struct(_, fields, _) => {
-                check_subpatterns(
-                    cx,
-                    "dereferencing a struct pattern where every field's pattern takes a reference",
-                    ref_pat,
-                    pat,
-                    fields.iter().map(|field| field.pat),
-                );
-            },
-            _ => {},
+        // Check for `&mut ref mut x` patterns where the `&mut` can be removed
+        if let PatKind::Ref(pat, Pinnedness::Not, Mutability::Mut) = ref_pat.kind
+            && !ref_pat.span.from_expansion()
+            && let PatKind::Binding(BindingMode::REF_MUT, _, ident, None) = pat.kind
+            && cx
+                .tcx
+                .hir_parent_iter(ref_pat.hir_id)
+                .map_while(|(_, parent)| if let Node::Pat(pat) = parent { Some(pat) } else { None })
+                // Do not lint if behind another ref pattern (can't move out of a reference)
+                // or part of an OR `|` pattern
+                .all(|pat| !matches!(pat.kind, PatKind::Or(_) | PatKind::Ref(..)))
+            && can_move_ref(cx, ref_pat)
+        {
+            span_lint_and_then(
+                cx,
+                NEEDLESS_BORROWED_REFERENCE,
+                ref_pat.span,
+                "this pattern takes a mutable reference on something that is being dereferenced",
+                |diag| {
+                    let span = ref_pat.span.until(ident.span);
+                    diag.span_suggestion_verbose(
+                        span,
+                        "try removing the `&mut ref mut` part",
+                        String::new(),
+                        Applicability::MachineApplicable,
+                    );
+                },
+            );
         }
     }
+}
+
+/// Checks whether the `&mut` reference matched by `ref_pat` can be moved (rather than reborrowed).
+/// This is only valid when the scrutinee is a simple local variable that is not used after the
+/// enclosing match/if let expression.
+fn can_move_ref(cx: &LateContext<'_>, ref_pat: &Pat<'_>) -> bool {
+    // Walk up past patterns and arms to find the enclosing match/if let expression
+    let mut scrutinee_and_expr = None;
+    for (_, parent) in cx.tcx.hir_parent_iter(ref_pat.hir_id) {
+        if matches!(parent, Node::Pat(_) | Node::PatField(_) | Node::Arm(_)) {
+            // skip intermediate pattern/arm nodes
+        } else if let Node::Expr(expr) = parent {
+            match expr.kind {
+                ExprKind::Match(scrutinee, _, _) => {
+                    scrutinee_and_expr = Some((scrutinee, expr));
+                    break;
+                },
+                // the pattern's direct parent is the `Let` expression;
+                // keep going one level up to the `If` for the right "used after" scope.
+                ExprKind::Let(let_expr) => {
+                    scrutinee_and_expr = Some((let_expr.init, expr));
+                },
+                ExprKind::If(..) if scrutinee_and_expr.is_some() => {
+                    scrutinee_and_expr = scrutinee_and_expr.map(|(s, _)| (s, expr));
+                    break;
+                },
+                _ => break,
+            }
+        } else {
+            break;
+        }
+    }
+
+    if let Some((scrutinee, scope_expr)) = scrutinee_and_expr
+        && let ExprKind::Path(QPath::Resolved(None, path)) = scrutinee.kind
+        && let hir::def::Res::Local(local_id) = path.res
+    {
+        return !local_used_after_expr(cx, local_id, scope_expr);
+    }
+    false
 }
 
 fn check_subpatterns<'tcx>(

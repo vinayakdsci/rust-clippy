@@ -1,5 +1,4 @@
 #![warn(clippy::pub_use)]
-#![allow(unused_imports)]
 #![no_main]
 
 pub mod outer {
@@ -8,7 +7,7 @@ pub mod outer {
     }
     // should be linted
     pub use inner::Test;
-    //~^ ERROR: using `pub use`
+    //~^ pub_use
 }
 
 // should not be linted

@@ -1,12 +1,11 @@
 # Clippy
 
-[![Clippy Test](https://github.com/rust-lang/rust-clippy/workflows/Clippy%20Test%20(bors)/badge.svg?branch=auto&event=push)](https://github.com/rust-lang/rust-clippy/actions?query=workflow%3A%22Clippy+Test+(bors)%22+event%3Apush+branch%3Aauto)
 [![License: MIT OR Apache-2.0](https://img.shields.io/crates/l/clippy.svg)](https://github.com/rust-lang/rust-clippy#license)
 
 A collection of lints to catch common mistakes and improve your
 [Rust](https://github.com/rust-lang/rust) code.
 
-[There are over 700 lints included in this crate!](https://rust-lang.github.io/rust-clippy/master/index.html)
+[There are over 800 lints included in this crate!](https://rust-lang.github.io/rust-clippy/main/index.html)
 
 Lints are divided into categories, each with a default [lint
 level](https://doc.rust-lang.org/rustc/lints/levels.html). You can choose how
@@ -39,6 +38,6 @@ on a case-by-case basis before enabling.
     - Preventing panicking in certain functions (e.g. [`clippy::unwrap_used`]).
     - Running a lint only on a subset of code (e.g. `#[forbid(clippy::float_arithmetic)]` on a module).
 
-[`clippy::else_if_without_else`]: https://rust-lang.github.io/rust-clippy/master/index.html#else_if_without_else
-[`clippy::todo`]: https://rust-lang.github.io/rust-clippy/master/index.html#todo
-[`clippy::unwrap_used`]: https://rust-lang.github.io/rust-clippy/master/index.html#unwrap_used
+[`clippy::else_if_without_else`]: https://rust-lang.github.io/rust-clippy/main/index.html#else_if_without_else
+[`clippy::todo`]: https://rust-lang.github.io/rust-clippy/main/index.html#todo
+[`clippy::unwrap_used`]: https://rust-lang.github.io/rust-clippy/main/index.html#unwrap_used

@@ -1,15 +1,14 @@
 use clippy_utils::diagnostics::span_lint_and_then;
-use clippy_utils::macros::root_macro_call_first_node;
-use clippy_utils::return_ty;
-use clippy_utils::ty::is_type_diagnostic_item;
-use clippy_utils::visitors::{for_each_expr, Descend};
+use clippy_utils::macros::{is_panic, root_macro_call_first_node};
+use clippy_utils::res::MaybeDef as _;
+use clippy_utils::visitors::{Descend, for_each_expr};
+use clippy_utils::{is_inside_always_const_context, return_ty};
 use core::ops::ControlFlow;
 use rustc_hir as hir;
 use rustc_hir::intravisit::FnKind;
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::declare_lint_pass;
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
 use rustc_span::def_id::LocalDefId;
-use rustc_span::{sym, Span};
+use rustc_span::{Span, sym};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -40,7 +39,7 @@ declare_clippy_lint! {
     "functions of type `Result<..>` that contain `panic!()` or assertion"
 }
 
-declare_lint_pass!(PanicInResultFn  => [PANIC_IN_RESULT_FN]);
+declare_lint_pass!(PanicInResultFn => [PANIC_IN_RESULT_FN]);
 
 impl<'tcx> LateLintPass<'tcx> for PanicInResultFn {
     fn check_fn(
@@ -56,7 +55,7 @@ impl<'tcx> LateLintPass<'tcx> for PanicInResultFn {
             return;
         }
         let owner = cx.tcx.local_def_id_to_hir_id(def_id).expect_owner();
-        if is_type_diagnostic_item(cx, return_ty(cx, owner), sym::Result) {
+        if return_ty(cx, owner).is_diag_item(cx, sym::Result) {
             lint_impl_body(cx, span, body);
         }
     }
@@ -64,14 +63,17 @@ impl<'tcx> LateLintPass<'tcx> for PanicInResultFn {
 
 fn lint_impl_body<'tcx>(cx: &LateContext<'tcx>, impl_span: Span, body: &'tcx hir::Body<'tcx>) {
     let mut panics = Vec::new();
-    let _: Option<!> = for_each_expr(cx, body.value, |e| {
+    let _: Option<!> = for_each_expr(cx.tcx, &body.value, |e| {
         let Some(macro_call) = root_macro_call_first_node(cx, e) else {
             return ControlFlow::Continue(Descend::Yes);
         };
-        if matches!(
-            cx.tcx.item_name(macro_call.def_id).as_str(),
-            "panic" | "assert" | "assert_eq" | "assert_ne"
-        ) {
+        if !is_inside_always_const_context(cx.tcx, e.hir_id)
+            && (is_panic(cx, macro_call.def_id)
+                || matches!(
+                    cx.tcx.get_diagnostic_name(macro_call.def_id),
+                    Some(sym::assert_macro | sym::assert_eq_macro | sym::assert_ne_macro)
+                ))
+        {
             panics.push(macro_call.span);
             ControlFlow::Continue(Descend::No)
         } else {

@@ -1,7 +1,8 @@
+//@check-pass
 //@compile-flags: --test
 
 #![warn(clippy::wildcard_imports)]
-#![allow(unused, clippy::unnecessary_wraps, clippy::let_unit_value)]
+#![expect(clippy::let_unit_value)]
 
 // Test for #10580, the lint should ignore it because of the crate's cfg test flag.
 

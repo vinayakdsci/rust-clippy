@@ -9,9 +9,13 @@ fn main() {
 
     unsafe {
         core::mem::swap(&mut *y, &mut *z);
+        //~^ swap_ptr_to_ref
         core::mem::swap(&mut *y, &mut x);
+        //~^ swap_ptr_to_ref
         core::mem::swap(&mut x, &mut *y);
+        //~^ swap_ptr_to_ref
         core::mem::swap(&mut *addr_of_mut!(x), &mut *addr_of_mut!(x));
+        //~^ swap_ptr_to_ref
     }
 
     let y = &mut x;
@@ -19,4 +23,31 @@ fn main() {
     let z = &mut z;
 
     core::mem::swap(y, z);
+}
+
+mod pr17777 {
+    #[clippy::msrv = "1.5.0"]
+    fn before_core_msrv(y: *mut u32, z: *mut u32) {
+        unsafe {
+            core::mem::swap(&mut *y, &mut *z);
+            //~^ swap_ptr_to_ref
+        }
+    }
+
+    #[clippy::msrv = "1.6.0"]
+    fn after_core_msrv(y: *mut u32, z: *mut u32) {
+        unsafe {
+            core::mem::swap(&mut *y, &mut *z);
+            //~^ swap_ptr_to_ref
+        }
+    }
+
+    // before const is in .._unfixable since there is no suggestion to be made but this still needs to warn
+    #[clippy::msrv = "1.85.0"]
+    const fn after_const_msrv(y: *mut u32, z: *mut u32) {
+        unsafe {
+            core::mem::swap(&mut *y, &mut *z);
+            //~^ swap_ptr_to_ref
+        }
+    }
 }

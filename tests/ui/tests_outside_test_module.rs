@@ -1,4 +1,4 @@
-#![allow(unused)]
+//@require-annotations-for-level: WARN
 #![warn(clippy::tests_outside_test_module)]
 
 fn main() {
@@ -8,8 +8,8 @@ fn main() {
 // Should lint
 #[test]
 fn my_test() {}
-//~^ ERROR: this function marked with #[test] is outside a #[cfg(test)] module
-//~| NOTE: move it to a testing module marked with #[cfg(test)]
+//~^ ERROR: this function marked with `#[test]` is outside a `#[cfg(test)]` module
+//~| NOTE: move it to a testing module marked with `#[cfg(test)]`
 
 #[cfg(test)]
 mod tests {

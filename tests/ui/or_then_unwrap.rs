@@ -1,5 +1,6 @@
 #![warn(clippy::or_then_unwrap)]
-#![allow(clippy::map_identity, clippy::let_unit_value, clippy::unnecessary_literal_unwrap)]
+#![allow(clippy::unnecessary_literal_unwrap)]
+#![expect(clippy::let_unit_value, clippy::map_identity)]
 
 struct SomeStruct;
 impl SomeStruct {
@@ -20,13 +21,25 @@ impl SomeOtherStruct {
 fn main() {
     let option: Option<&str> = None;
     let _ = option.or(Some("fallback")).unwrap(); // should trigger lint
+    //
+    //~^^ or_then_unwrap
 
     let result: Result<&str, &str> = Err("Error");
     let _ = result.or::<&str>(Ok("fallback")).unwrap(); // should trigger lint
+    //
+    //~^^ or_then_unwrap
+
+    // Call with macro should preserve the macro call rather than expand it
+    let option: Option<Vec<&str>> = None;
+    let _ = option.or(Some(vec!["fallback"])).unwrap(); // should trigger lint
+    //
+    //~^^ or_then_unwrap
 
     // as part of a method chain
     let option: Option<&str> = None;
     let _ = option.map(|v| v).or(Some("fallback")).unwrap().to_string().chars(); // should trigger lint
+    //
+    //~^^ or_then_unwrap
 
     // Not Option/Result
     let instance = SomeStruct {};

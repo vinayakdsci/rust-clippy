@@ -1,18 +1,18 @@
+use clippy_utils::res::{MaybeDef as _, MaybeTypeckRes as _};
 use clippy_utils::ty::get_iterator_item_ty;
 use hir::ExprKind;
-use rustc_lint::{LateContext, LintContext};
+use rustc_lint::LateContext;
 
 use super::{ITER_FILTER_IS_OK, ITER_FILTER_IS_SOME};
 
 use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::{indent_of, reindent_multiline};
-use clippy_utils::{get_parent_expr, is_trait_method, peel_blocks, span_contains_comment};
+use clippy_utils::{get_parent_expr, peel_blocks, span_contains_comment, sym};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::QPath;
-use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
-use std::borrow::Cow;
+use rustc_span::symbol::{Ident, Symbol};
 
 ///
 /// Returns true if the expression is a method call to `method_name`
@@ -50,7 +50,7 @@ fn is_method(
     fn pat_is_recv(ident: Ident, param: &hir::Pat<'_>) -> bool {
         match param.kind {
             hir::PatKind::Binding(_, _, other, _) => ident == other,
-            hir::PatKind::Ref(pat, _) => pat_is_recv(ident, pat),
+            hir::PatKind::Ref(pat, _, _) => pat_is_recv(ident, pat),
             _ => false,
         }
     }
@@ -95,8 +95,8 @@ fn is_method(
             false
         },
         ExprKind::Closure(&hir::Closure { body, .. }) => {
-            let body = cx.tcx.hir().body(body);
-            let closure_expr = peel_blocks(body.value);
+            let body = cx.tcx.hir_body(body);
+            let closure_expr = peel_blocks(&body.value);
             let params = body.params.iter().map(|param| param.pat).collect::<Vec<_>>();
             is_method(cx, closure_expr, type_symbol, method_name, params.as_slice())
         },
@@ -106,9 +106,9 @@ fn is_method(
 
 fn parent_is_map(cx: &LateContext<'_>, expr: &hir::Expr<'_>) -> bool {
     if let Some(expr) = get_parent_expr(cx, expr)
-        && is_trait_method(cx, expr, sym::Iterator)
-        && let ExprKind::MethodCall(path, _, _, _) = expr.kind
+        && let ExprKind::MethodCall(path, _, [_], _) = expr.kind
         && path.ident.name == sym::map
+        && cx.ty_based_def(expr).opt_parent(cx).is_diag_item(cx, sym::Iterator)
     {
         return true;
     }
@@ -126,15 +126,13 @@ enum FilterType {
 ///
 /// How this is done:
 /// 1. we know that this is invoked in a method call with `filter` as the method name via `mod.rs`
-/// 2. we check that we are in a trait method. Therefore we are in an `(x as
-///    Iterator).filter({filter_arg})` method call.
-/// 3. we check that the parent expression is not a map. This is because we don't want to lint
-///    twice, and we already have a specialized lint for that.
+/// 2. we check that we are in a trait method. Therefore we are in an `(x as Iterator).filter({filter_arg})` method
+///    call.
+/// 3. we check that the parent expression is not a map. This is because we don't want to lint twice, and we already
+///    have a specialized lint for that.
 /// 4. we check that the span of the filter does not contain a comment.
-/// 5. we get the type of the `Item` in the `Iterator`, and compare against the type of Option and
-///    Result.
-/// 6. we finally check the contents of the filter argument to see if it is a call to `is_some` or
-///    `is_ok`.
+/// 5. we get the type of the `Item` in the `Iterator`, and compare against the type of Option and Result.
+/// 6. we finally check the contents of the filter argument to see if it is a call to `is_some` or `is_ok`.
 /// 7. if all of the above are true, then we return the `FilterType`
 fn expression_type(
     cx: &LateContext<'_>,
@@ -142,9 +140,9 @@ fn expression_type(
     filter_arg: &hir::Expr<'_>,
     filter_span: Span,
 ) -> Option<FilterType> {
-    if !is_trait_method(cx, expr, sym::Iterator)
+    if !cx.ty_based_def(expr).opt_parent(cx).is_diag_item(cx, sym::Iterator)
         || parent_is_map(cx, expr)
-        || span_contains_comment(cx.sess().source_map(), filter_span.with_hi(expr.span.hi()))
+        || span_contains_comment(cx, filter_span.with_hi(expr.span.hi()))
     {
         return None;
     }
@@ -155,7 +153,7 @@ fn expression_type(
         if let Some(opt_defid) = cx.tcx.get_diagnostic_item(sym::Option)
             && let opt_ty = cx.tcx.type_of(opt_defid).skip_binder()
             && iter_item_ty.ty_adt_def() == opt_ty.ty_adt_def()
-            && is_method(cx, filter_arg, sym::Option, sym!(is_some), &[])
+            && is_method(cx, filter_arg, sym::Option, sym::is_some, &[])
         {
             return Some(FilterType::IsSome);
         }
@@ -163,7 +161,7 @@ fn expression_type(
         if let Some(opt_defid) = cx.tcx.get_diagnostic_item(sym::Result)
             && let opt_ty = cx.tcx.type_of(opt_defid).skip_binder()
             && iter_item_ty.ty_adt_def() == opt_ty.ty_adt_def()
-            && is_method(cx, filter_arg, sym::Result, sym!(is_ok), &[])
+            && is_method(cx, filter_arg, sym::Result, sym::is_ok, &[])
         {
             return Some(FilterType::IsOk);
         }
@@ -181,7 +179,7 @@ pub(super) fn check(cx: &LateContext<'_>, expr: &hir::Expr<'_>, filter_arg: &hir
             filter_span.with_hi(expr.span.hi()),
             "`filter` for `is_ok` on iterator over `Result`s",
             "consider using `flatten` instead",
-            reindent_multiline(Cow::Borrowed("flatten()"), true, indent_of(cx, filter_span)).into_owned(),
+            reindent_multiline("flatten()", true, indent_of(cx, filter_span)),
             Applicability::HasPlaceholders,
         ),
         Some(FilterType::IsSome) => span_lint_and_sugg(
@@ -190,7 +188,7 @@ pub(super) fn check(cx: &LateContext<'_>, expr: &hir::Expr<'_>, filter_arg: &hir
             filter_span.with_hi(expr.span.hi()),
             "`filter` for `is_some` on iterator over `Option`",
             "consider using `flatten` instead",
-            reindent_multiline(Cow::Borrowed("flatten()"), true, indent_of(cx, filter_span)).into_owned(),
+            reindent_multiline("flatten()", true, indent_of(cx, filter_span)),
             Applicability::HasPlaceholders,
         ),
     }

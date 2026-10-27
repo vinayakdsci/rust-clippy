@@ -1,11 +1,4 @@
-#![allow(
-    unused_variables,
-    unused_assignments,
-    clippy::similar_names,
-    clippy::disallowed_names,
-    clippy::branches_sharing_code,
-    clippy::needless_late_init
-)]
+#![expect(clippy::disallowed_names, clippy::needless_late_init)]
 #![warn(clippy::useless_let_if_seq)]
 //@no-rustfix
 fn f() -> bool {
@@ -69,21 +62,16 @@ fn allow_works() -> i32 {
 }
 
 fn main() {
-    early_return();
-    issue975();
-    issue985();
-    issue985_alt();
-
     let mut foo = 0;
-    //~^ ERROR: `if _ { .. } else { .. }` is an expression
-    //~| NOTE: you might not need `mut` at all
+    //~^ useless_let_if_seq
+
     if f() {
         foo = 42;
     }
 
     let mut bar = 0;
-    //~^ ERROR: `if _ { .. } else { .. }` is an expression
-    //~| NOTE: you might not need `mut` at all
+    //~^ useless_let_if_seq
+
     if f() {
         f();
         bar = 42;
@@ -92,7 +80,8 @@ fn main() {
     }
 
     let quz;
-    //~^ ERROR: `if _ { .. } else { .. }` is an expression
+    //~^ useless_let_if_seq
+
     if f() {
         quz = 42;
     } else {
@@ -122,8 +111,8 @@ fn main() {
 
     // baz needs to be mut
     let mut baz = 0;
-    //~^ ERROR: `if _ { .. } else { .. }` is an expression
-    //~| NOTE: you might not need `mut` at all
+    //~^ useless_let_if_seq
+
     if f() {
         baz = 42;
     }
@@ -137,4 +126,35 @@ fn main() {
         val = Cell::new(2);
     }
     println!("{}", val.get());
+}
+
+fn issue16062(bar: fn() -> bool) {
+    let foo;
+    //~^ useless_let_if_seq
+    if bar() {
+        foo = 42;
+    } else {
+        foo = 0;
+    }
+}
+
+fn issue16064(bar: fn() -> bool) {
+    macro_rules! mac {
+        ($e:expr) => {
+            $e()
+        };
+        ($base:expr, $lit:expr) => {
+            $lit * $base + 2
+        };
+    }
+
+    let foo;
+    //~^ useless_let_if_seq
+    if mac!(bar) {
+        foo = mac!(10, 4);
+    } else {
+        foo = 0;
+    }
+
+    let bar = 1;
 }

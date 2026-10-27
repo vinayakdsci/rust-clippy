@@ -1,13 +1,17 @@
+use std::ops::ControlFlow;
+
 use clippy_utils::diagnostics::span_lint_and_sugg;
-use clippy_utils::ty::is_type_lang_item;
+use clippy_utils::res::MaybeDef as _;
+use clippy_utils::sym;
 use rustc_ast::ast::LitKind;
+use rustc_attr_ir::lang_items::LangItem;
 use rustc_errors::Applicability;
-use rustc_hir::intravisit::{walk_expr, Visitor};
-use rustc_hir::{Arm, Expr, ExprKind, LangItem, PatKind};
+use rustc_hir::intravisit::{Visitor, walk_expr};
+use rustc_hir::{Arm, Expr, ExprKind, Lit, PatExpr, PatExprKind, PatKind};
 use rustc_lint::LateContext;
 use rustc_middle::ty;
-use rustc_span::symbol::Symbol;
 use rustc_span::Span;
+use rustc_span::symbol::Symbol;
 
 use super::MATCH_STR_CASE_MISMATCH;
 
@@ -23,53 +27,53 @@ pub(super) fn check<'tcx>(cx: &LateContext<'tcx>, scrutinee: &'tcx Expr<'_>, arm
     if let ty::Ref(_, ty, _) = cx.typeck_results().expr_ty(scrutinee).kind()
         && let ty::Str = ty.kind()
     {
-        let mut visitor = MatchExprVisitor { cx, case_method: None };
-
-        visitor.visit_expr(scrutinee);
-
-        if let Some(case_method) = visitor.case_method {
-            if let Some((bad_case_span, bad_case_sym)) = verify_case(&case_method, arms) {
-                lint(cx, &case_method, bad_case_span, bad_case_sym.as_str());
-            }
+        let mut visitor = MatchExprVisitor { cx };
+        if let ControlFlow::Break(case_method) = visitor.visit_expr(scrutinee)
+            && let Some((bad_case_span, bad_case_sym)) = verify_case(&case_method, arms)
+        {
+            lint(cx, &case_method, bad_case_span, bad_case_sym.as_str());
         }
     }
 }
 
 struct MatchExprVisitor<'a, 'tcx> {
     cx: &'a LateContext<'tcx>,
-    case_method: Option<CaseMethod>,
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for MatchExprVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, ex: &'tcx Expr<'_>) {
-        match ex.kind {
-            ExprKind::MethodCall(segment, receiver, [], _) if self.case_altered(segment.ident.as_str(), receiver) => {},
-            _ => walk_expr(self, ex),
-        }
-    }
-}
-
-impl<'a, 'tcx> MatchExprVisitor<'a, 'tcx> {
-    fn case_altered(&mut self, segment_ident: &str, receiver: &Expr<'_>) -> bool {
-        if let Some(case_method) = get_case_method(segment_ident) {
-            let ty = self.cx.typeck_results().expr_ty(receiver).peel_refs();
-
-            if is_type_lang_item(self.cx, ty, LangItem::String) || ty.kind() == &ty::Str {
-                self.case_method = Some(case_method);
-                return true;
+impl<'tcx> Visitor<'tcx> for MatchExprVisitor<'_, 'tcx> {
+    type Result = ControlFlow<CaseMethod>;
+    fn visit_expr(&mut self, ex: &'tcx Expr<'_>) -> Self::Result {
+        if let ExprKind::MethodCall(segment, receiver, [], _) = ex.kind {
+            let result = self.case_altered(segment.ident.name, receiver);
+            if result.is_break() {
+                return result;
             }
         }
 
-        false
+        walk_expr(self, ex)
     }
 }
 
-fn get_case_method(segment_ident_str: &str) -> Option<CaseMethod> {
-    match segment_ident_str {
-        "to_lowercase" => Some(CaseMethod::LowerCase),
-        "to_ascii_lowercase" => Some(CaseMethod::AsciiLowerCase),
-        "to_uppercase" => Some(CaseMethod::UpperCase),
-        "to_ascii_uppercase" => Some(CaseMethod::AsciiUppercase),
+impl MatchExprVisitor<'_, '_> {
+    fn case_altered(&self, segment_ident: Symbol, receiver: &Expr<'_>) -> ControlFlow<CaseMethod> {
+        if let Some(case_method) = get_case_method(segment_ident) {
+            let ty = self.cx.typeck_results().expr_ty(receiver).peel_refs();
+
+            if ty.is_lang_item(self.cx, LangItem::String) || ty.kind() == &ty::Str {
+                return ControlFlow::Break(case_method);
+            }
+        }
+
+        ControlFlow::Continue(())
+    }
+}
+
+fn get_case_method(segment_ident: Symbol) -> Option<CaseMethod> {
+    match segment_ident {
+        sym::to_lowercase => Some(CaseMethod::LowerCase),
+        sym::to_ascii_lowercase => Some(CaseMethod::AsciiLowerCase),
+        sym::to_uppercase => Some(CaseMethod::UpperCase),
+        sym::to_ascii_uppercase => Some(CaseMethod::AsciiUppercase),
         _ => None,
     }
 }
@@ -81,17 +85,39 @@ fn verify_case<'a>(case_method: &'a CaseMethod, arms: &'a [Arm<'_>]) -> Option<(
         CaseMethod::UpperCase => |input: &str| -> bool { input.chars().all(|c| c.to_uppercase().next() == Some(c)) },
         CaseMethod::AsciiUppercase => |input: &str| -> bool { !input.chars().any(|c| c.is_ascii_lowercase()) },
     };
+    let verify_pattern_expression = |lit: &Lit| -> Option<(Span, Symbol)> {
+        if let LitKind::Str(symbol, _) = lit.node {
+            let input = symbol.as_str();
+            if !case_check(input) {
+                return Some((lit.span, symbol));
+            }
+        }
+        None
+    };
 
     for arm in arms {
-        if let PatKind::Lit(Expr {
-            kind: ExprKind::Lit(lit),
-            ..
-        }) = arm.pat.kind
-            && let LitKind::Str(symbol, _) = lit.node
-            && let input = symbol.as_str()
-            && !case_check(input)
-        {
-            return Some((lit.span, symbol));
+        match arm.pat.kind {
+            PatKind::Expr(PatExpr {
+                kind: PatExprKind::Lit { lit, negated: false },
+                ..
+            }) => {
+                if let Some(result) = verify_pattern_expression(lit) {
+                    return Some(result);
+                }
+            },
+            PatKind::Or(fields) => {
+                for field in fields {
+                    if let PatKind::Expr(PatExpr {
+                        kind: PatExprKind::Lit { lit, negated: false },
+                        ..
+                    }) = field.kind
+                        && let Some(result) = verify_pattern_expression(lit)
+                    {
+                        return Some(result);
+                    }
+                }
+            },
+            _ => {},
         }
     }
 

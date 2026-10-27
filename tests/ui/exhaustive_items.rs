@@ -1,5 +1,5 @@
-#![deny(clippy::exhaustive_enums, clippy::exhaustive_structs)]
-#![allow(unused)]
+#![feature(default_field_values)]
+#![warn(clippy::exhaustive_enums, clippy::exhaustive_structs)]
 
 fn main() {
     // nop
@@ -7,6 +7,7 @@ fn main() {
 
 pub mod enums {
     pub enum Exhaustive {
+        //~^ exhaustive_enums
         Foo,
         Bar,
         Baz,
@@ -16,6 +17,7 @@ pub mod enums {
     /// Some docs
     #[repr(C)]
     pub enum ExhaustiveWithAttrs {
+        //~^ exhaustive_enums
         Foo,
         Bar,
         Baz,
@@ -51,6 +53,7 @@ pub mod enums {
 
 pub mod structs {
     pub struct Exhaustive {
+        //~^ exhaustive_structs
         pub foo: u8,
         pub bar: String,
     }
@@ -82,5 +85,11 @@ pub mod structs {
     struct NonExhaustivePrivate {
         pub foo: u8,
         pub bar: String,
+    }
+}
+
+pub mod issue14992 {
+    pub struct A {
+        pub a: isize = 42,
     }
 }

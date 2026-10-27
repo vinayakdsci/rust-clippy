@@ -1,10 +1,10 @@
 use clippy_utils::diagnostics::span_lint_and_then;
+use clippy_utils::is_from_proc_macro;
 use rustc_errors::Applicability;
 use rustc_hir::def_id::{DefId, DefIdMap};
-use rustc_hir::{GenericBound, Generics, PolyTraitRef, TraitBoundModifier, WherePredicate};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::ty::{ClauseKind, PredicatePolarity};
-use rustc_session::declare_lint_pass;
+use rustc_hir::{BoundPolarity, GenericBound, Generics, PolyTraitRef, TraitBoundModifiers, WherePredicateKind};
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
+use rustc_middle::ty::{ClauseKind, ClausePolarity, Unnormalized};
 use rustc_span::symbol::Ident;
 
 declare_clippy_lint! {
@@ -26,21 +26,22 @@ declare_clippy_lint! {
     ///
     /// // or choose alternative bounds for `T` so that it can be unsized
     /// ```
-    #[clippy::version = "1.79.0"]
+    #[clippy::version = "1.81.0"]
     pub NEEDLESS_MAYBE_SIZED,
     suspicious,
     "a `?Sized` bound that is unusable due to a `Sized` requirement"
 }
+
 declare_lint_pass!(NeedlessMaybeSized => [NEEDLESS_MAYBE_SIZED]);
 
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
+#[derive(Debug)]
 struct Bound<'tcx> {
     /// The [`DefId`] of the type parameter the bound refers to
     param: DefId,
     ident: Ident,
 
     trait_bound: &'tcx PolyTraitRef<'tcx>,
-    modifier: TraitBoundModifier,
 
     predicate_pos: usize,
     bound_pos: usize,
@@ -53,7 +54,7 @@ fn type_param_bounds<'tcx>(generics: &'tcx Generics<'tcx>) -> impl Iterator<Item
         .iter()
         .enumerate()
         .filter_map(|(predicate_pos, predicate)| {
-            let WherePredicate::BoundPredicate(bound_predicate) = predicate else {
+            let WherePredicateKind::BoundPredicate(bound_predicate) = &predicate.kind else {
                 return None;
             };
 
@@ -65,11 +66,10 @@ fn type_param_bounds<'tcx>(generics: &'tcx Generics<'tcx>) -> impl Iterator<Item
                     .iter()
                     .enumerate()
                     .filter_map(move |(bound_pos, bound)| match bound {
-                        &GenericBound::Trait(ref trait_bound, modifier) => Some(Bound {
+                        GenericBound::Trait(trait_bound) => Some(Bound {
                             param,
                             ident,
                             trait_bound,
-                            modifier,
                             predicate_pos,
                             bound_pos,
                         }),
@@ -91,9 +91,14 @@ fn path_to_sized_bound(cx: &LateContext<'_>, trait_bound: &PolyTraitRef<'_>) -> 
             return true;
         }
 
-        for &(predicate, _) in cx.tcx.super_predicates_of(trait_def_id).predicates {
-            if let ClauseKind::Trait(trait_predicate) = predicate.kind().skip_binder()
-                && trait_predicate.polarity == PredicatePolarity::Positive
+        for (clause, _) in cx
+            .tcx
+            .explicit_super_clauses_of(trait_def_id)
+            .iter_identity_copied()
+            .map(Unnormalized::skip_norm_wip)
+        {
+            if let ClauseKind::Trait(trait_predicate) = clause.kind().skip_binder()
+                && trait_predicate.polarity == ClausePolarity::Positive
                 && !path.contains(&trait_predicate.def_id())
             {
                 path.push(trait_predicate.def_id());
@@ -120,15 +125,16 @@ impl LateLintPass<'_> for NeedlessMaybeSized {
         let maybe_sized_params: DefIdMap<_> = type_param_bounds(generics)
             .filter(|bound| {
                 bound.trait_bound.trait_ref.trait_def_id() == Some(sized_trait)
-                    && bound.modifier == TraitBoundModifier::Maybe
+                    && matches!(bound.trait_bound.modifiers.polarity, BoundPolarity::Maybe(_))
             })
             .map(|bound| (bound.param, bound))
             .collect();
 
         for bound in type_param_bounds(generics) {
-            if bound.modifier == TraitBoundModifier::None
+            if bound.trait_bound.modifiers == TraitBoundModifiers::NONE
                 && let Some(sized_bound) = maybe_sized_params.get(&bound.param)
                 && let Some(path) = path_to_sized_bound(cx, bound.trait_bound)
+                && !is_from_proc_macro(cx, bound.trait_bound)
             {
                 span_lint_and_then(
                     cx,

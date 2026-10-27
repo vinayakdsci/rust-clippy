@@ -1,9 +1,9 @@
-use clippy_utils::diagnostics::span_lint_and_help;
-use clippy_utils::source::snippet;
-use rustc_hir::{LetStmt, TyKind};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::lint::in_external_macro;
-use rustc_session::declare_lint_pass;
+use clippy_utils::diagnostics::span_lint_and_then;
+use clippy_utils::is_from_proc_macro;
+use clippy_utils::source::{IntoSpan as _, SpanExt as _};
+use rustc_ast::{Local, TyKind};
+use rustc_errors::Applicability;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext as _, declare_lint_pass};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -23,29 +23,37 @@ declare_clippy_lint! {
     complexity,
     "unneeded underscore type (`_`) in a variable declaration"
 }
+
 declare_lint_pass!(UnderscoreTyped => [LET_WITH_TYPE_UNDERSCORE]);
 
-impl LateLintPass<'_> for UnderscoreTyped {
-    fn check_local(&mut self, cx: &LateContext<'_>, local: &LetStmt<'_>) {
-        if !in_external_macro(cx.tcx.sess, local.span)
-            && let Some(ty) = local.ty // Ensure that it has a type defined
-            && let TyKind::Infer = &ty.kind // that type is '_'
+impl EarlyLintPass for UnderscoreTyped {
+    fn check_local(&mut self, cx: &EarlyContext<'_>, local: &Local) {
+        if let Some(ty) = &local.ty // Ensure that it has a type defined
+            && let TyKind::Infer = ty.kind // that type is '_'
             && local.span.eq_ctxt(ty.span)
+            && let sm = cx.sess().source_map()
+            && !local.span.in_external_macro(sm)
+            && !is_from_proc_macro(cx, &**ty)
         {
-            // NOTE: Using `is_from_proc_macro` on `init` will require that it's initialized,
-            // this doesn't. Alternatively, `WithSearchPat` can be implemented for `Ty`
-            if snippet(cx, ty.span, "_").trim() != "_" {
-                return;
-            }
+            let span_to_remove = sm
+                .span_extend_to_prev_char_before(ty.span, ':', true)
+                .with_leading_whitespace(cx)
+                .into_span();
 
-            span_lint_and_help(
+            span_lint_and_then(
                 cx,
                 LET_WITH_TYPE_UNDERSCORE,
                 local.span,
                 "variable declared with type underscore",
-                Some(ty.span.with_lo(local.pat.span.hi())),
-                "remove the explicit type `_` declaration",
+                |diag| {
+                    diag.span_suggestion_verbose(
+                        span_to_remove,
+                        "remove the explicit type `_` declaration",
+                        "",
+                        Applicability::MachineApplicable,
+                    );
+                },
             );
-        };
+        }
     }
 }

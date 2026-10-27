@@ -1,4 +1,4 @@
-#![allow(non_local_definitions)]
+//@ check-pass
 
 const COUNT: usize = 2;
 struct Thing;

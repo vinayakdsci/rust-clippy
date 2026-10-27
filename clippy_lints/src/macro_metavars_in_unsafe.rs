@@ -1,15 +1,15 @@
-use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
-
+use clippy_config::Conf;
 use clippy_utils::diagnostics::span_lint_hir_and_then;
 use clippy_utils::is_lint_allowed;
-use itertools::Itertools;
+use itertools::Itertools as _;
+use rustc_attr_ir::find_attr;
 use rustc_hir::def_id::LocalDefId;
-use rustc_hir::intravisit::{walk_block, walk_expr, walk_stmt, Visitor};
+use rustc_hir::intravisit::{Visitor, walk_block, walk_expr, walk_stmt};
 use rustc_hir::{BlockCheckMode, Expr, ExprKind, HirId, Stmt, UnsafeSource};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_session::impl_lint_pass;
-use rustc_span::{sym, Span, SyntaxContext};
+use rustc_lint::{LateContext, LateLintPass, LintContext as _, impl_lint_pass};
+use rustc_span::{OrdSpan, Span, SyntaxContext};
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -82,6 +82,7 @@ declare_clippy_lint! {
     suspicious,
     "expanding macro metavariables in an unsafe block"
 }
+
 impl_lint_pass!(ExprMetavarsInUnsafe => [MACRO_METAVARS_IN_UNSAFE]);
 
 #[derive(Clone, Debug)]
@@ -90,9 +91,8 @@ pub enum MetavarState {
     ReferencedInSafe,
 }
 
-#[derive(Default)]
 pub struct ExprMetavarsInUnsafe {
-    pub warn_unsafe_macro_metavars_in_private_macros: bool,
+    warn_unsafe_macro_metavars_in_private_macros: bool,
     /// A metavariable can be expanded more than once, potentially across multiple bodies, so it
     /// requires some state kept across HIR nodes to make it possible to delay a warning
     /// and later undo:
@@ -106,7 +106,16 @@ pub struct ExprMetavarsInUnsafe {
     ///     }
     /// }
     /// ```
-    pub metavar_expns: BTreeMap<Span, MetavarState>,
+    metavar_expns: BTreeMap<OrdSpan, MetavarState>,
+}
+
+impl ExprMetavarsInUnsafe {
+    pub fn new(conf: &'static Conf) -> Self {
+        Self {
+            warn_unsafe_macro_metavars_in_private_macros: conf.warn_unsafe_macro_metavars_in_private_macros,
+            metavar_expns: BTreeMap::new(),
+        }
+    }
 }
 
 struct BodyVisitor<'a, 'tcx> {
@@ -114,19 +123,34 @@ struct BodyVisitor<'a, 'tcx> {
     /// within a relevant macro.
     macro_unsafe_blocks: Vec<HirId>,
     /// When this is >0, it means that the node currently being visited is "within" a
-    /// macro definition. This is not necessary for correctness, it merely helps reduce the number
-    /// of spans we need to insert into the map, since only spans from macros are relevant.
+    /// macro definition.
+    /// This is used to detect if an expression represents a metavariable.
+    ///
+    /// For example, the following pre-expansion code that we want to lint
+    /// ```ignore
+    /// macro_rules! m { ($e:expr) => { unsafe { $e; } } }
+    /// m!(1);
+    /// ```
+    /// would look like this post-expansion code:
+    /// ```ignore
+    /// unsafe { /* macro */
+    ///     1 /* root */; /* macro */
+    /// }
+    /// ```
+    /// Visiting the block and the statement will increment the `expn_depth` so that it is >0,
+    /// and visiting the expression with a root context while `expn_depth > 0` tells us
+    /// that it must be a metavariable.
     expn_depth: u32,
     cx: &'a LateContext<'tcx>,
     lint: &'a mut ExprMetavarsInUnsafe,
 }
 
 fn is_public_macro(cx: &LateContext<'_>, def_id: LocalDefId) -> bool {
-    (cx.effective_visibilities.is_exported(def_id) || cx.tcx.has_attr(def_id, sym::macro_export))
+    (cx.effective_visibilities.is_exported(def_id) || find_attr!(cx.tcx, def_id, MacroExport { .. }))
         && !cx.tcx.is_doc_hidden(def_id)
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for BodyVisitor<'a, 'tcx> {
+impl<'tcx> Visitor<'tcx> for BodyVisitor<'_, 'tcx> {
     fn visit_stmt(&mut self, s: &'tcx Stmt<'tcx>) {
         let from_expn = s.span.from_expansion();
         if from_expn {
@@ -149,12 +173,14 @@ impl<'a, 'tcx> Visitor<'tcx> for BodyVisitor<'a, 'tcx> {
             && (self.lint.warn_unsafe_macro_metavars_in_private_macros || is_public_macro(self.cx, macro_def_id))
         {
             self.macro_unsafe_blocks.push(block.hir_id);
+            self.expn_depth += 1;
             walk_block(self, block);
+            self.expn_depth -= 1;
             self.macro_unsafe_blocks.pop();
         } else if ctxt.is_root() && self.expn_depth > 0 {
             let unsafe_block = self.macro_unsafe_blocks.last().copied();
 
-            match (self.lint.metavar_expns.entry(e.span), unsafe_block) {
+            match (self.lint.metavar_expns.entry(OrdSpan(e.span)), unsafe_block) {
                 (Entry::Vacant(e), None) => {
                     e.insert(MetavarState::ReferencedInSafe);
                 },
@@ -186,7 +212,7 @@ impl<'a, 'tcx> Visitor<'tcx> for BodyVisitor<'a, 'tcx> {
 }
 
 impl<'tcx> LateLintPass<'tcx> for ExprMetavarsInUnsafe {
-    fn check_body(&mut self, cx: &LateContext<'tcx>, body: &rustc_hir::Body<'tcx>) {
+    fn check_body(&mut self, cx: &LateContext<'tcx>, body: &'tcx rustc_hir::Body<'tcx>) {
         if is_lint_allowed(cx, MACRO_METAVARS_IN_UNSAFE, body.value.hir_id) {
             return;
         }
@@ -195,11 +221,11 @@ impl<'tcx> LateLintPass<'tcx> for ExprMetavarsInUnsafe {
         // `check_stmt_post` on `(Late)LintPass`, which we'd need to detect when we're leaving a macro span
 
         let mut vis = BodyVisitor {
+            macro_unsafe_blocks: Vec::new(),
             #[expect(clippy::bool_to_int_with_if)] // obfuscates the meaning
             expn_depth: if body.value.span.from_expansion() { 1 } else { 0 },
-            macro_unsafe_blocks: Vec::new(),
-            lint: self,
-            cx
+            cx,
+            lint: self
         };
         vis.visit_body(body);
     }
@@ -217,18 +243,29 @@ impl<'tcx> LateLintPass<'tcx> for ExprMetavarsInUnsafe {
         // We want to lint unsafe blocks #0 and #1
         let bad_unsafe_blocks = self
             .metavar_expns
-            .iter()
-            .filter_map(|(_, state)| match state {
+            .values()
+            .filter_map(|state| match state {
                 MetavarState::ReferencedInUnsafe { unsafe_blocks } => Some(unsafe_blocks.as_slice()),
                 MetavarState::ReferencedInSafe => None,
             })
             .flatten()
             .copied()
+            .inspect(|&unsafe_block| {
+                let level_spec = cx.tcx.lint_level_spec_at_node(MACRO_METAVARS_IN_UNSAFE, unsafe_block);
+                if level_spec.is_expect() {
+                    // Since we're going to deduplicate expanded unsafe blocks by its enclosing macro definition soon,
+                    // which would lead to unfulfilled `#[expect()]`s in all other unsafe blocks that are filtered out
+                    // except for the one we emit the warning at, we must manually fulfill the lint
+                    // for all unsafe blocks here.
+                    // `unwrap` is safe because `Expect` lints always have a `lint_id`.
+                    cx.fulfill_expectation(level_spec.lint_id().unwrap());
+                }
+            })
             .map(|id| {
                 // Remove the syntax context to hide "in this macro invocation" in the diagnostic.
                 // The invocation doesn't matter. Also we want to dedupe by the unsafe block and not by anything
                 // related to the callsite.
-                let span = cx.tcx.hir().span(id);
+                let span = cx.tcx.hir_span(id);
 
                 (id, Span::new(span.lo(), span.hi(), SyntaxContext::root(), None))
             })

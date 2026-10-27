@@ -1,11 +1,9 @@
 use clippy_utils::diagnostics::{span_lint_and_help, span_lint_and_sugg};
 use rustc_ast::node_id::{NodeId, NodeMap};
-use rustc_ast::ptr::P;
-use rustc_ast::visit::{walk_expr, Visitor};
+use rustc_ast::visit::{Visitor, walk_expr};
 use rustc_ast::{Crate, Expr, ExprKind, Item, ItemKind, MacroDef, ModKind, Ty, TyKind, UseTreeKind};
 use rustc_errors::Applicability;
-use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
-use rustc_session::impl_lint_pass;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext as _, impl_lint_pass};
 use rustc_span::edition::Edition;
 use rustc_span::symbol::kw;
 use rustc_span::{Span, Symbol};
@@ -38,6 +36,8 @@ declare_clippy_lint! {
     "imports with single component path are redundant"
 }
 
+impl_lint_pass!(SingleComponentPathImports => [SINGLE_COMPONENT_PATH_IMPORTS]);
+
 #[derive(Default)]
 pub struct SingleComponentPathImports {
     /// Buffer found usages to emit when visiting that item so that `#[allow]` works as expected
@@ -50,8 +50,6 @@ struct SingleUse {
     item_id: NodeId,
     can_suggest: bool,
 }
-
-impl_lint_pass!(SingleComponentPathImports => [SINGLE_COMPONENT_PATH_IMPORTS]);
 
 impl EarlyLintPass for SingleComponentPathImports {
     fn check_crate(&mut self, cx: &EarlyContext<'_>, krate: &Crate) {
@@ -102,7 +100,7 @@ struct ImportUsageVisitor {
     imports_referenced_with_self: Vec<Symbol>,
 }
 
-impl<'tcx> Visitor<'tcx> for ImportUsageVisitor {
+impl Visitor<'_> for ImportUsageVisitor {
     fn visit_expr(&mut self, expr: &Expr) {
         if let ExprKind::Path(_, path) = &expr.kind
             && path.segments.len() > 1
@@ -124,7 +122,7 @@ impl<'tcx> Visitor<'tcx> for ImportUsageVisitor {
 }
 
 impl SingleComponentPathImports {
-    fn check_mod(&mut self, items: &[P<Item>]) {
+    fn check_mod(&mut self, items: &[Box<Item>]) {
         // keep track of imports reused with `self` keyword, such as `self::crypto_hash` in the example
         // below. Removing the `use crypto_hash;` would make this a compile error
         // ```
@@ -147,16 +145,24 @@ impl SingleComponentPathImports {
         // ```
         let mut macros = Vec::new();
 
-        let mut import_usage_visitor = ImportUsageVisitor::default();
         for item in items {
             self.track_uses(item, &mut imports_reused_with_self, &mut single_use_usages, &mut macros);
+        }
+
+        // Only walk the module's AST in search of `self::xxx` paths when there are single
+        // component imports left to lint, as the visitor recurses into every nested item.
+        single_use_usages.retain(|usage| !imports_reused_with_self.contains(&usage.name));
+        if single_use_usages.is_empty() {
+            return;
+        }
+
+        let mut import_usage_visitor = ImportUsageVisitor::default();
+        for item in items {
             import_usage_visitor.visit_item(item);
         }
 
         for usage in single_use_usages {
-            if !imports_reused_with_self.contains(&usage.name)
-                && !import_usage_visitor.imports_referenced_with_self.contains(&usage.name)
-            {
+            if !import_usage_visitor.imports_referenced_with_self.contains(&usage.name) {
                 self.found.entry(usage.item_id).or_default().push(usage);
             }
         }
@@ -174,11 +180,11 @@ impl SingleComponentPathImports {
         }
 
         match &item.kind {
-            ItemKind::Mod(_, ModKind::Loaded(ref items, ..)) => {
+            ItemKind::Mod(_, _, ModKind::Loaded(items, ..)) => {
                 self.check_mod(items);
             },
-            ItemKind::MacroDef(MacroDef { macro_rules: true, .. }) => {
-                macros.push(item.ident.name);
+            ItemKind::MacroDef(ident, MacroDef { macro_rules: true, .. }) => {
+                macros.push(ident.name);
             },
             ItemKind::Use(use_tree) => {
                 let segments = &use_tree.prefix.segments;
@@ -203,38 +209,37 @@ impl SingleComponentPathImports {
                     // keep track of `use {some_module, some_other_module};` usages
                     if let UseTreeKind::Nested { items, .. } = &use_tree.kind {
                         for tree in items {
-                            let segments = &tree.0.prefix.segments;
-                            if segments.len() == 1 {
-                                if let UseTreeKind::Simple(None) = tree.0.kind {
-                                    let name = segments[0].ident.name;
-                                    if !macros.contains(&name) {
-                                        single_use_usages.push(SingleUse {
-                                            name,
-                                            span: tree.0.span,
-                                            item_id: item.id,
-                                            can_suggest: false,
-                                        });
-                                    }
+                            let segments = &tree.inner.prefix.segments;
+                            if segments.len() == 1
+                                && let UseTreeKind::Simple(None) = tree.inner.kind
+                            {
+                                let name = segments[0].ident.name;
+                                if !macros.contains(&name) {
+                                    single_use_usages.push(SingleUse {
+                                        name,
+                                        span: tree.inner.span(),
+                                        item_id: item.id,
+                                        can_suggest: false,
+                                    });
                                 }
                             }
                         }
                     }
-                } else {
-                    // keep track of `use self::some_module` usages
-                    if segments[0].ident.name == kw::SelfLower {
-                        // simple case such as `use self::module::SomeStruct`
-                        if segments.len() > 1 {
-                            imports_reused_with_self.push(segments[1].ident.name);
-                            return;
-                        }
+                }
+                // keep track of `use self::some_module` usages
+                else if segments[0].ident.name == kw::SelfLower {
+                    // simple case such as `use self::module::SomeStruct`
+                    if segments.len() > 1 {
+                        imports_reused_with_self.push(segments[1].ident.name);
+                        return;
+                    }
 
-                        // nested case such as `use self::{module1::Struct1, module2::Struct2}`
-                        if let UseTreeKind::Nested { items, .. } = &use_tree.kind {
-                            for tree in items {
-                                let segments = &tree.0.prefix.segments;
-                                if !segments.is_empty() {
-                                    imports_reused_with_self.push(segments[0].ident.name);
-                                }
+                    // nested case such as `use self::{module1::Struct1, module2::Struct2}`
+                    if let UseTreeKind::Nested { items, .. } = &use_tree.kind {
+                        for tree in items {
+                            let segments = &tree.inner.prefix.segments;
+                            if !segments.is_empty() {
+                                imports_reused_with_self.push(segments[0].ident.name);
                             }
                         }
                     }

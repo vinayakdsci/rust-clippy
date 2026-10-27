@@ -1,10 +1,9 @@
-use clippy_utils::diagnostics::span_lint_and_help;
+use clippy_utils::diagnostics::span_lint_and_then;
+use rustc_attr_ir::{ReprAttr, find_attr};
 use rustc_hir::{HirId, Item, ItemKind};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::ty::layout::LayoutOf;
+use rustc_lint::{LateContext, LateLintPass, declare_lint_pass};
+use rustc_middle::ty::layout::LayoutOf as _;
 use rustc_middle::ty::{self, FieldDef};
-use rustc_session::declare_lint_pass;
-use rustc_span::sym;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -48,6 +47,7 @@ declare_clippy_lint! {
     restriction,
     "unions without a `#[repr(C)]` attribute"
 }
+
 declare_lint_pass!(DefaultUnionRepresentation => [DEFAULT_UNION_REPRESENTATION]);
 
 impl<'tcx> LateLintPass<'tcx> for DefaultUnionRepresentation {
@@ -56,16 +56,18 @@ impl<'tcx> LateLintPass<'tcx> for DefaultUnionRepresentation {
             && is_union_with_two_non_zst_fields(cx, item)
             && !has_c_repr_attr(cx, item.hir_id())
         {
-            span_lint_and_help(
+            #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+            span_lint_and_then(
                 cx,
                 DEFAULT_UNION_REPRESENTATION,
                 item.span,
                 "this union has the default representation",
-                None,
-                format!(
-                    "consider annotating `{}` with `#[repr(C)]` to explicitly specify memory layout",
-                    cx.tcx.def_path_str(item.owner_id)
-                ),
+                |diag| {
+                    diag.help(format!(
+                        "consider annotating `{}` with `#[repr(C)]` to explicitly specify memory layout",
+                        cx.tcx.def_path_str(item.owner_id)
+                    ));
+                },
             );
         }
     }
@@ -77,7 +79,12 @@ impl<'tcx> LateLintPass<'tcx> for DefaultUnionRepresentation {
 /// of that field does not matter either.)
 fn is_union_with_two_non_zst_fields<'tcx>(cx: &LateContext<'tcx>, item: &Item<'tcx>) -> bool {
     if let ItemKind::Union(..) = &item.kind
-        && let ty::Adt(adt_def, args) = cx.tcx.type_of(item.owner_id).instantiate_identity().kind()
+        && let ty::Adt(adt_def, args) = cx
+            .tcx
+            .type_of(item.owner_id)
+            .instantiate_identity()
+            .skip_norm_wip()
+            .kind()
     {
         adt_def.all_fields().filter(|f| !is_zst(cx, f, args)).count() >= 2
     } else {
@@ -86,7 +93,7 @@ fn is_union_with_two_non_zst_fields<'tcx>(cx: &LateContext<'tcx>, item: &Item<'t
 }
 
 fn is_zst<'tcx>(cx: &LateContext<'tcx>, field: &FieldDef, args: ty::GenericArgsRef<'tcx>) -> bool {
-    let ty = field.ty(cx.tcx, args);
+    let ty = field.ty(cx.tcx, args).skip_norm_wip();
     if let Ok(layout) = cx.layout_of(ty) {
         layout.is_zst()
     } else {
@@ -95,16 +102,7 @@ fn is_zst<'tcx>(cx: &LateContext<'tcx>, field: &FieldDef, args: ty::GenericArgsR
 }
 
 fn has_c_repr_attr(cx: &LateContext<'_>, hir_id: HirId) -> bool {
-    cx.tcx.hir().attrs(hir_id).iter().any(|attr| {
-        if attr.has_name(sym::repr) {
-            if let Some(items) = attr.meta_item_list() {
-                for item in items {
-                    if item.is_word() && matches!(item.name_or_empty(), sym::C) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    })
+    let attrs = cx.tcx.hir_attrs(hir_id);
+
+    find_attr!(attrs, Repr { reprs, .. } if reprs.iter().any(|(x, _)| *x == ReprAttr::ReprC))
 }

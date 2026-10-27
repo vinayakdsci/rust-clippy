@@ -1,13 +1,7 @@
+#![feature(decl_macro)]
 #![warn(clippy::useless_format)]
-#![allow(
-    clippy::print_literal,
-    clippy::redundant_clone,
-    clippy::to_string_in_format_args,
-    clippy::needless_borrow,
-    clippy::uninlined_format_args,
-    clippy::needless_raw_string_hashes,
-    clippy::useless_vec
-)]
+#![allow(clippy::needless_borrow, clippy::to_string_in_format_args)]
+#![expect(clippy::print_literal)]
 
 struct Foo(pub String);
 
@@ -17,16 +11,22 @@ macro_rules! foo {
 
 fn main() {
     format!("foo");
+    //~^ useless_format
     format!("{{}}");
+    //~^ useless_format
     format!("{{}} abc {{}}");
+    //~^ useless_format
     format!(
+        //~^ useless_format
         r##"foo {{}}
 " bar"##
     );
 
     let _ = format!("");
+    //~^ useless_format
 
     format!("{}", "foo");
+    //~^ useless_format
     format!("{:?}", "foo"); // Don't warn about `Debug`.
     format!("{:8}", "foo");
     format!("{:width$}", "foo", width = 8);
@@ -35,6 +35,7 @@ fn main() {
 
     let arg = String::new();
     format!("{}", arg);
+    //~^ useless_format
     format!("{:?}", arg); // Don't warn about debug.
     format!("{:8}", arg);
     format!("{:width$}", arg, width = 8);
@@ -65,28 +66,92 @@ fn main() {
     format!("{:.prec$}", "foo", prec = 10);
 
     format!("{}", 42.to_string());
+    //~^ useless_format
     let x = std::path::PathBuf::from("/bar/foo/qux");
     format!("{}", x.display().to_string());
+    //~^ useless_format
 
     // False positive
     let a = "foo".to_string();
     let _ = Some(format!("{}", a + "bar"));
+    //~^ useless_format
 
     // Wrap it with braces
     let v: Vec<String> = vec!["foo".to_string(), "bar".to_string()];
     let _s: String = format!("{}", &*v.join("\n"));
+    //~^ useless_format
 
     format!("prepend {:+}", "s");
 
     // Issue #8290
     let x = "foo";
     let _ = format!("{x}");
+    //~^ useless_format
     let _ = format!("{x:?}"); // Don't lint on debug
     let _ = format!("{y}", y = x);
+    //~^ useless_format
 
     // Issue #9234
     let abc = "abc";
     let _ = format!("{abc}");
+    //~^ useless_format
     let xx = "xx";
     let _ = format!("{xx}");
+    //~^ useless_format
+
+    // Issue #3361: `&format!("literal")` should suggest the literal directly
+    let _: &str = &format!("hello"); //~ useless_format
+    let _: &str = &format!("{{}}"); //~ useless_format
+    let _: &str = &format!(r"hello"); //~ useless_format
+    let _: &str = &format!(r#"world"#); //~ useless_format
+    let _: &str = &format!(r##"foo"##); //~ useless_format
+    let _: &str = &format!(r##"hello "\u{{007B}}""##); //~ useless_format
+    // Only immutable borrows: `&mut format!` is not handled
+    let _: &mut String = &mut format!("hello"); //~ useless_format
+
+    fn literal(lit: &str) {}
+    literal(&format!("hello")); //~ useless_format
+    literal(&&format!("hello")); //~ useless_format
+
+    let lit = "hello";
+    literal(&format!("{}", lit)); //~ useless_format
+    literal(&format!("{lit}")); //~ useless_format
+}
+
+// `format!` as the tail expression of a block emitted by another macro
+// (e.g. rustc's `with_forced_trimmed_paths!`). The lint must still fire.
+mod block_wrap {
+    macro_rules! plain_mr {
+        ($e:expr) => {
+            $e
+        };
+    }
+    macro_rules! block_mr {
+        ($e:expr) => {{
+            let _g: i32 = 0;
+            $e
+        }};
+    }
+    pub macro plain_dm($e:expr) {
+        $e
+    }
+    pub macro block_dm($e:expr) {{
+        let _g: i32 = 0;
+        $e
+    }}
+
+    fn s() -> String {
+        String::from("x")
+    }
+
+    pub fn check() {
+        let _ = plain_mr!(format!("{}", s()));
+        //~^ useless_format
+        let _ = block_mr!(format!("{}", s()));
+        //~^ useless_format
+        let _ = plain_dm!(format!("{}", s()));
+        //~^ useless_format
+        let _ = block_dm!(format!("{}", s()));
+        //~^ useless_format
+    }
 }

@@ -1,7 +1,7 @@
 #![deny(
-    clippy::unnecessary_safety_doc,
     clippy::missing_errors_doc,
-    clippy::missing_panics_doc
+    clippy::missing_panics_doc,
+    clippy::unnecessary_safety_doc
 )]
 
 /// This is a private function, skip to match behavior with `missing_safety_doc`.
@@ -49,6 +49,12 @@ pub mod __macro {
         pub unsafe fn f() {}
         //~^ ERROR: unsafe function's docs are missing a `# Safety` section
     }
+}
+
+#[warn(clippy::missing_errors_doc)]
+#[test]
+fn test() -> Result<(), ()> {
+    Ok(())
 }
 
 fn main() {}

@@ -1,14 +1,12 @@
-//! lint when there is a large size difference between variants on an enum
-
+use clippy_config::Conf;
 use clippy_utils::diagnostics::span_lint_and_then;
+use clippy_utils::is_no_std_crate;
 use clippy_utils::source::snippet_with_applicability;
-use clippy_utils::ty::{approx_ty_size, is_copy, AdtVariantInfo};
+use clippy_utils::ty::{AdtVariantInfo, approx_ty_size, is_copy};
 use rustc_errors::Applicability;
 use rustc_hir::{Item, ItemKind};
-use rustc_lint::{LateContext, LateLintPass};
-use rustc_middle::lint::in_external_macro;
+use rustc_lint::{LateContext, LateLintPass, impl_lint_pass};
 use rustc_middle::ty::{self, Ty};
-use rustc_session::impl_lint_pass;
 use rustc_span::Span;
 
 declare_clippy_lint! {
@@ -59,40 +57,33 @@ declare_clippy_lint! {
     "large size difference between variants on an enum"
 }
 
-#[derive(Copy, Clone)]
+impl_lint_pass!(LargeEnumVariant => [LARGE_ENUM_VARIANT]);
+
 pub struct LargeEnumVariant {
     maximum_size_difference_allowed: u64,
 }
 
 impl LargeEnumVariant {
-    #[must_use]
-    pub fn new(maximum_size_difference_allowed: u64) -> Self {
+    pub fn new(conf: &'static Conf) -> Self {
         Self {
-            maximum_size_difference_allowed,
+            maximum_size_difference_allowed: conf.enum_variant_size_threshold,
         }
     }
 }
 
-impl_lint_pass!(LargeEnumVariant => [LARGE_ENUM_VARIANT]);
-
 impl<'tcx> LateLintPass<'tcx> for LargeEnumVariant {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &Item<'tcx>) {
-        if in_external_macro(cx.tcx.sess, item.span) {
-            return;
-        }
-        if let ItemKind::Enum(ref def, _) = item.kind {
-            let ty = cx.tcx.type_of(item.owner_id).instantiate_identity();
-            let ty::Adt(adt, subst) = ty.kind() else {
-                panic!("already checked whether this is an enum")
-            };
-            if adt.variants().len() <= 1 {
-                return;
-            }
+        if let ItemKind::Enum(ident, _, ref def) = item.kind
+            && let ty = cx.tcx.type_of(item.owner_id).instantiate_identity().skip_norm_wip()
+            && let ty::Adt(adt, subst) = ty.kind()
+            && adt.variants().len() > 1
+            && !item.span.in_external_macro(cx.tcx.sess.source_map())
+        {
             let variants_size = AdtVariantInfo::new(cx, *adt, subst);
 
             let mut difference = variants_size[0].size - variants_size[1].size;
             if difference > self.maximum_size_difference_allowed {
-                let help_text = "consider boxing the large fields to reduce the total size of the enum";
+                let help_text = "consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum";
                 span_lint_and_then(
                     cx,
                     LARGE_ENUM_VARIANT,
@@ -123,10 +114,10 @@ impl<'tcx> LateLintPass<'tcx> for LargeEnumVariant {
                         let mut applicability = Applicability::MaybeIncorrect;
                         if is_copy(cx, ty) || maybe_copy(cx, ty) {
                             diag.span_note(
-                                item.ident.span,
+                                ident.span,
                                 "boxing a variant would require the type no longer be `Copy`",
                             );
-                        } else {
+                        } else if !is_no_std_crate(cx) {
                             let sugg: Vec<(Span, String)> = variants_size[0]
                                 .fields_size
                                 .iter()

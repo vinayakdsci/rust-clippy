@@ -1,8 +1,9 @@
 #![warn(clippy::manual_filter)]
-#![allow(unused_variables, dead_code, clippy::useless_vec)]
+#![expect(clippy::useless_vec)]
 
 fn main() {
     match Some(0) {
+        //~^ manual_filter
         None => None,
         Some(x) => {
             if x > 0 {
@@ -14,6 +15,7 @@ fn main() {
     };
 
     match Some(1) {
+        //~^ manual_filter
         Some(x) => {
             if x > 0 {
                 None
@@ -25,6 +27,7 @@ fn main() {
     };
 
     match Some(2) {
+        //~^ manual_filter
         Some(x) => {
             if x > 0 {
                 None
@@ -36,6 +39,7 @@ fn main() {
     };
 
     match Some(3) {
+        //~^ manual_filter
         Some(x) => {
             if x > 0 {
                 Some(x)
@@ -48,6 +52,7 @@ fn main() {
 
     let y = Some(4);
     match y {
+        //~^ manual_filter
         // Some(4)
         None => None,
         Some(x) => {
@@ -60,6 +65,7 @@ fn main() {
     };
 
     match Some(5) {
+        //~^ manual_filter
         Some(x) => {
             if x > 0 {
                 Some(x)
@@ -71,6 +77,7 @@ fn main() {
     };
 
     match Some(6) {
+        //~^ manual_filter
         Some(ref x) => {
             if x > &0 {
                 Some(x)
@@ -83,6 +90,7 @@ fn main() {
 
     let external_cond = true;
     match Some(String::new()) {
+        //~^ manual_filter
         Some(x) => {
             if external_cond {
                 Some(x)
@@ -94,12 +102,14 @@ fn main() {
     };
 
     if let Some(x) = Some(7) {
+        //~^ manual_filter
         if external_cond { Some(x) } else { None }
     } else {
         None
     };
 
     match &Some(8) {
+        //~^ manual_filter
         &Some(x) => {
             if x != 0 {
                 Some(x)
@@ -111,6 +121,7 @@ fn main() {
     };
 
     match Some(9) {
+        //~^ manual_filter
         Some(x) => {
             if x > 10 && x < 100 {
                 Some(x)
@@ -137,6 +148,7 @@ fn main() {
 
     #[allow(clippy::blocks_in_conditions)]
     match Some(11) {
+        //~^ manual_filter
         // Lint, statement is preserved by `.filter`
         Some(x) => {
             if {
@@ -181,6 +193,7 @@ fn main() {
         true
     }
     let _ = match Some(14) {
+        //~^ manual_filter
         Some(x) => {
             if unsafe { f(x) } {
                 Some(x)
@@ -191,6 +204,7 @@ fn main() {
         None => None,
     };
     let _ = match Some(15) {
+        //~^ manual_filter
         Some(x) => unsafe { if f(x) { Some(x) } else { None } },
         None => None,
     };
@@ -199,6 +213,7 @@ fn main() {
     if let Some(_) = Some(16) {
         Some(16)
     } else if let Some(x) = Some(16) {
+        //~^ manual_filter
         // Lint starting from here
         if x % 2 == 0 { Some(x) } else { None }
     } else {
@@ -277,4 +292,78 @@ fn main() {
 
 fn maybe_some() -> Option<u32> {
     Some(0)
+}
+
+fn issue14440(opt: Option<i32>) {
+    opt.and_then(|x| if x == 0 { None } else { Some(x) });
+    //~^ manual_filter
+
+    let y = 1i32;
+    opt.and_then(move |x| if x == y { Some(x) } else { None });
+    //~^ manual_filter
+
+    let opt1 = Some("123".to_string());
+    opt1.and_then(|s| if s.len() > 2 { Some(s) } else { None });
+    //~^ manual_filter
+
+    unsafe fn f(x: u32) -> bool {
+        true
+    }
+    opt.and_then(|x| if unsafe { f(x as u32) } { Some(x) } else { None });
+    //~^ manual_filter
+    opt.and_then(|x| unsafe { if f(x as u32) { Some(x) } else { None } });
+    //~^ manual_filter
+}
+
+fn issue_17804() {
+    struct Inner(u8);
+    impl Inner {
+        fn check(&mut self) -> bool {
+            self.0 += 1;
+            true
+        }
+        fn peek(&self) -> bool {
+            self.0 > 0
+        }
+    }
+
+    struct Wrapper(Inner);
+    impl Wrapper {
+        fn inner_mut(&mut self) -> &mut Inner {
+            &mut self.0
+        }
+    }
+
+    // `Option::filter` only provides `&T`, so these can't be rewritten.
+    Some(Wrapper(Inner(0))).and_then(|mut wrapper| {
+        if wrapper.inner_mut().check() && wrapper.inner_mut().check() {
+            Some(wrapper)
+        } else {
+            None
+        }
+    });
+    let mut inner = Inner(0);
+    Some(&mut inner).and_then(|x| if x.check() { Some(x) } else { None });
+    match Some(Inner(0)) {
+        Some(mut x) => {
+            if x.check() {
+                Some(x)
+            } else {
+                None
+            }
+        },
+        None => None,
+    };
+    if let Some(mut x) = Some(Inner(0)) {
+        if x.check() { Some(x) } else { None }
+    } else {
+        None
+    };
+
+    // A read-only condition can still use `filter`.
+    Some(Inner(0)).and_then(|x| if x.peek() { Some(x) } else { None });
+    //~^ manual_filter
+    let mut inner = Inner(0);
+    Some(&mut inner).and_then(|x| if x.peek() { Some(x) } else { None });
+    //~^ manual_filter
 }

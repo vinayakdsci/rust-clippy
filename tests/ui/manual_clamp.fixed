@@ -1,11 +1,5 @@
 #![warn(clippy::manual_clamp)]
-#![allow(
-    unused,
-    dead_code,
-    clippy::unnecessary_operation,
-    clippy::no_effect,
-    clippy::if_same_then_else
-)]
+#![expect(clippy::if_same_then_else, clippy::needless_match)]
 
 use std::cmp::{max as cmp_max, min as cmp_min};
 
@@ -150,12 +144,10 @@ fn const_main() {
     let x3 = input.clamp(CONST_MIN, CONST_MAX);
 
     let x4 = input.clamp(CONST_MIN, CONST_MAX);
-    //~^ ERROR: clamp-like pattern without using clamp function
-    //~| NOTE: clamp will panic if max < min
+    //~^ manual_clamp
 
     let x5 = input.clamp(CONST_MIN, CONST_MAX);
-    //~^ ERROR: clamp-like pattern without using clamp function
-    //~| NOTE: clamp will panic if max < min
+    //~^ manual_clamp
 
     let x6 = input.clamp(CONST_MIN, CONST_MAX);
 
@@ -187,54 +179,53 @@ fn const_main() {
         let input: i32 = cmp_min_max(1);
         // These can only be detected if exactly one of the arguments to the inner function is const.
         let x16 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let x17 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let x18 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let x19 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let x20 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let x21 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let x22 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let x23 = input.clamp(CONST_MIN, CONST_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min
+        //~^ manual_clamp
+
         let input: f64 = cmp_min_max(1) as f64;
         let x24 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
+
         let x25 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
+
         let x26 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
+
         let x27 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
+
         let x28 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
+
         let x29 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
+
         let x30 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
+
         let x31 = input.clamp(CONST_F64_MIN, CONST_F64_MAX);
-        //~^ ERROR: clamp-like pattern without using clamp function
-        //~| NOTE: clamp will panic if max < min, min.is_nan(), or max.is_nan()
+        //~^ manual_clamp
     }
     let mut x32 = input;
     x32 = x32.clamp(CONST_MIN, CONST_MAX);
@@ -417,6 +408,44 @@ fn msrv_1_49() {
 fn msrv_1_50() {
     let input = 0;
     let _ = input.clamp(CONST_MIN, CONST_MAX);
+}
+
+const CONST_U32_MAX: u32 = 100;
+
+fn eq_unsigned_zero_lint() {
+    // == 0 on unsigned with result 1: equivalent to < 1
+    let mut x0: u32 = 5;
+    x0 = x0.clamp(1, CONST_U32_MAX);
+
+    // Flipped: `0 == x`
+    let mut x1: u32 = 5;
+    x1 = x1.clamp(1, CONST_U32_MAX);
+
+    // Two separate if statements
+    let mut x2: u32 = 5;
+    x2 = x2.clamp(1, CONST_U32_MAX);
+
+    // if-elseif-else (value) pattern
+    let input: u32 = 5;
+    let x3 = input.clamp(1, CONST_U32_MAX);
+}
+
+fn eq_unsigned_zero_no_lint() {
+    // Result is not 1, so == 0 doesn't cover all values < 5.
+    let mut x0: u32 = 5;
+    if x0 == 0 {
+        x0 = 5;
+    } else if x0 > CONST_U32_MAX {
+        x0 = CONST_U32_MAX;
+    }
+
+    // Signed type: not applicable
+    let mut x1: i32 = 5;
+    if x1 == 0 {
+        x1 = 1;
+    } else if x1 > CONST_MAX {
+        x1 = CONST_MAX;
+    }
 }
 
 const fn _const() {

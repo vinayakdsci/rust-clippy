@@ -1,15 +1,9 @@
 //@aux-build:proc_macro_derive.rs
 
 #![warn(clippy::use_self)]
-#![allow(dead_code, unreachable_code)]
-#![allow(
-    clippy::should_implement_trait,
-    clippy::upper_case_acronyms,
-    clippy::from_over_into,
-    clippy::self_named_constructors,
-    clippy::needless_lifetimes,
-    clippy::missing_transmute_annotations
-)]
+#![expect(incomplete_features, clippy::from_over_into, clippy::self_named_constructors)]
+#![feature(adt_const_params)]
+#![feature(unsized_const_params)]
 
 #[macro_use]
 extern crate proc_macro_derive;
@@ -21,16 +15,22 @@ mod use_self {
 
     impl Foo {
         fn new() -> Self {
+            //~^ use_self
             Self {}
+            //~^ use_self
         }
         fn test() -> Self {
+            //~^ use_self
             Self::new()
+            //~^ use_self
         }
     }
 
     impl Default for Foo {
         fn default() -> Self {
+            //~^ use_self
             Self::new()
+            //~^ use_self
         }
     }
 }
@@ -63,7 +63,7 @@ mod lifetimes {
     impl<'a> Foo<'a> {
         // Cannot use `Self` as return type, because the function is actually `fn foo<'b>(s: &'b str) ->
         // Foo<'b>`
-        fn foo(s: &str) -> Foo {
+        fn foo(s: &str) -> Foo<'_> {
             Foo { foo_str: s }
         }
         // cannot replace with `Self`, because that's `Foo<'a>`
@@ -72,6 +72,7 @@ mod lifetimes {
         }
 
         fn clone(&self) -> Self {
+            //~^ use_self
             Foo { foo_str: self.foo_str }
         }
 
@@ -105,6 +106,8 @@ mod existential {
 
     impl Foo {
         fn bad(foos: &[Self]) -> impl Iterator<Item = &Self> {
+            //~^ use_self
+            //~| use_self
             foos.iter()
         }
 
@@ -120,6 +123,7 @@ mod tuple_structs {
     impl TS {
         pub fn ts() -> Self {
             Self(0)
+            //~^ use_self
         }
     }
 }
@@ -147,7 +151,6 @@ mod nesting {
     struct Foo;
     impl Foo {
         fn foo() {
-            #[allow(unused_imports)]
             use self::Foo; // Can't use Self here
             struct Bar {
                 foo: Foo, // Foo != Self
@@ -155,7 +158,9 @@ mod nesting {
 
             impl Bar {
                 fn bar() -> Self {
+                    //~^ use_self
                     Self { foo: Foo {} }
+                    //~^ use_self
                 }
             }
 
@@ -167,7 +172,9 @@ mod nesting {
 
         // Should lint here
         fn baz() -> Self {
+            //~^ use_self
             Self {}
+            //~^ use_self
         }
     }
 
@@ -178,15 +185,17 @@ mod nesting {
     }
     impl Enum {
         fn method() {
-            #[allow(unused_imports)]
             use self::Enum::*; // Issue 3425
             static STATIC: Enum = Enum::A; // Can't use Self as type
         }
 
         fn method2() {
             let _ = Self::B(42);
+            //~^ use_self
             let _ = Self::C { field: true };
+            //~^ use_self
             let _ = Self::A;
+            //~^ use_self
         }
     }
 }
@@ -229,9 +238,12 @@ mod rustfix {
 
         fn fun_2() {
             Self::fun_1();
+            //~^ use_self
             Self::A;
+            //~^ use_self
 
             Self {};
+            //~^ use_self
         }
     }
 }
@@ -251,6 +263,7 @@ mod issue3567 {
     impl Test for TestStruct {
         fn test() -> TestStruct {
             Self::from_something()
+            //~^ use_self
         }
     }
 }
@@ -265,11 +278,15 @@ mod paths_created_by_lowering {
         const B: usize = 1;
 
         async fn g() -> Self {
+            //~^ use_self
             Self {}
+            //~^ use_self
         }
 
         fn f<'a>(&self, p: &'a [u8]) -> &'a [u8] {
             &p[Self::A..Self::B]
+            //~^ use_self
+            //~| use_self
         }
     }
 
@@ -293,7 +310,9 @@ mod generics {
     impl<T> Foo<T> {
         // `Self` is applicable here
         fn foo(value: T) -> Self {
+            //~^ use_self
             Self { value }
+            //~^ use_self
         }
 
         // `Cannot` use `Self` as a return type as the generic types are different
@@ -466,6 +485,7 @@ mod nested_paths {
     impl A<submod::C> {
         fn test() -> Self {
             Self::new::<submod::B>(submod::B {})
+            //~^ use_self
         }
     }
 }
@@ -502,7 +522,8 @@ mod issue7206 {
 
     impl<'a> S2<S<'a>> {
         fn new_again() -> Self {
-            Self::new()
+            S2::new()
+            // FIXME: ^Broken by PR #15611
         }
     }
 }
@@ -540,13 +561,16 @@ mod use_self_in_pat {
         fn do_stuff(self) {
             match self {
                 Self::Bar => unimplemented!(),
+                //~^ use_self
                 Self::Baz => unimplemented!(),
+                //~^ use_self
             }
             match Some(1) {
                 Some(_) => unimplemented!(),
                 None => unimplemented!(),
             }
             if let Self::Bar = self {
+                //~^ use_self
                 unimplemented!()
             }
         }
@@ -571,16 +595,22 @@ mod issue8845 {
         fn get_value(&self) -> u8 {
             match self {
                 Self::Num(n) => *n,
+                //~^ use_self
                 Self::TupleNums(n, _m) => *n,
+                //~^ use_self
                 Self::StructNums { one, two: _ } => *one,
+                //~^ use_self
             }
         }
 
         fn use_crate(&self) -> u8 {
             match self {
                 Self::Num(n) => *n,
+                //~^ use_self
                 Self::TupleNums(n, _m) => *n,
+                //~^ use_self
                 Self::StructNums { one, two: _ } => *one,
+                //~^ use_self
             }
         }
 
@@ -597,11 +627,13 @@ mod issue8845 {
     impl Foo {
         fn get_value(&self) -> u8 {
             let Self(x) = self;
+            //~^ use_self
             *x
         }
 
         fn use_crate(&self) -> u8 {
             let Self(x) = self;
+            //~^ use_self
             *x
         }
     }
@@ -609,11 +641,13 @@ mod issue8845 {
     impl Bar {
         fn get_value(&self) -> u8 {
             let Self { x, .. } = self;
+            //~^ use_self
             *x
         }
 
         fn use_crate(&self) -> u8 {
             let Self { x, .. } = self;
+            //~^ use_self
             *x
         }
     }
@@ -653,6 +687,7 @@ fn msrv_1_37() {
         fn foo(self) {
             match self {
                 Self::A => {},
+                //~^ use_self
             }
         }
     }
@@ -663,6 +698,87 @@ mod issue_10371 {
 
     impl<const V: i32> From<Val<V>> for i32 {
         fn from(_: Val<V>) -> Self {
+            todo!()
+        }
+    }
+}
+
+mod issue_13092 {
+    use std::cell::RefCell;
+    macro_rules! macro_inner_item {
+        ($ty:ty) => {
+            fn foo(_: $ty) {
+                fn inner(_: $ty) {}
+            }
+        };
+    }
+
+    #[derive(Default)]
+    struct MyStruct;
+
+    impl MyStruct {
+        macro_inner_item!(MyStruct);
+    }
+
+    impl MyStruct {
+        thread_local! {
+            static SPECIAL: RefCell<MyStruct> = RefCell::default();
+        }
+    }
+}
+
+mod crash_check_13128 {
+    struct A;
+
+    impl A {
+        fn a() {
+            struct B;
+
+            // pushes a NoCheck
+            impl Iterator for &B {
+                // Pops the NoCheck
+                type Item = A;
+
+                // Lints A -> Self
+                fn next(&mut self) -> Option<A> {
+                    Some(A)
+                }
+            }
+        }
+    }
+}
+
+mod issue_13277 {
+    trait Foo {
+        type Item<'foo>;
+    }
+    struct Bar<'b> {
+        content: &'b str,
+    }
+    impl<'b> Foo for Option<Bar<'b>> {
+        // when checking whether `Option<Bar<'foo>>` has a lifetime, check not only the outer
+        // `Option<T>`, but also the inner `Bar<'foo>`
+        type Item<'foo> = Option<Bar<'foo>>;
+    }
+}
+
+mod issue16164 {
+    trait Bits {
+        fn bit<const I: u8>(self) -> bool;
+    }
+
+    impl Bits for u8 {
+        fn bit<const I: u8>(self) -> bool {
+            todo!()
+        }
+    }
+
+    trait T {
+        fn f<const C: (u8, u8)>(self) -> bool;
+    }
+
+    impl T for u8 {
+        fn f<const C: (u8, u8)>(self) -> bool {
             todo!()
         }
     }

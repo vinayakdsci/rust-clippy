@@ -1,26 +1,21 @@
 use super::ALLOW_ATTRIBUTES;
-use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::is_from_proc_macro;
+use rustc_ast::attr::AttributeExt as _;
 use rustc_ast::{AttrStyle, Attribute};
 use rustc_errors::Applicability;
-use rustc_lint::{LateContext, LintContext};
-use rustc_middle::lint::in_external_macro;
+use rustc_lint::EarlyContext;
 
 // Separate each crate's features.
-pub fn check<'cx>(cx: &LateContext<'cx>, attr: &'cx Attribute) {
-    if !in_external_macro(cx.sess(), attr.span)
-        && let AttrStyle::Outer = attr.style
-        && let Some(ident) = attr.ident()
+pub fn check<'cx>(cx: &EarlyContext<'cx>, attr: &'cx Attribute) {
+    if let AttrStyle::Outer = attr.style
+        && let Some(path_span) = attr.path_span()
+        && !attr.span.from_expansion()
         && !is_from_proc_macro(cx, attr)
     {
-        span_lint_and_sugg(
-            cx,
-            ALLOW_ATTRIBUTES,
-            ident.span,
-            "#[allow] attribute found",
-            "replace it with",
-            "expect".into(),
-            Applicability::MachineApplicable,
-        );
+        #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+        span_lint_and_then(cx, ALLOW_ATTRIBUTES, path_span, "#[allow] attribute found", |diag| {
+            diag.span_suggestion(path_span, "replace it with", "expect", Applicability::MachineApplicable);
+        });
     }
 }

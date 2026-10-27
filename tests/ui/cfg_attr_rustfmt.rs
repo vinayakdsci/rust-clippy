@@ -1,7 +1,7 @@
 
 #![feature(stmt_expr_attributes)]
 
-#![allow(unused, clippy::no_effect, clippy::unnecessary_operation)]
+#![expect(clippy::no_effect)]
 #![warn(clippy::deprecated_cfg_attr)]
 
 // This doesn't get linted, see known problems
@@ -16,10 +16,12 @@ fn foo(
 
 fn skip_on_statements() {
     #[cfg_attr(rustfmt, rustfmt::skip)]
+    //~^ deprecated_cfg_attr
     5+3;
 }
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
+//~^ deprecated_cfg_attr
 fn main() {
     foo::f();
 }
@@ -39,5 +41,6 @@ fn msrv_1_29() {
 #[clippy::msrv = "1.30"]
 fn msrv_1_30() {
     #[cfg_attr(rustfmt, rustfmt::skip)]
+    //~^ deprecated_cfg_attr
     1+30;
 }

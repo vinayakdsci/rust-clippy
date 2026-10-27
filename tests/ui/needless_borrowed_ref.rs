@@ -1,10 +1,9 @@
 #![warn(clippy::needless_borrowed_reference)]
-#![allow(
-    unused,
+#![expect(
     irrefutable_let_patterns,
     non_shorthand_field_patterns,
     clippy::needless_borrow,
-    clippy::needless_if
+    clippy::unneeded_wildcard_pattern
 )]
 
 fn main() {}
@@ -28,32 +27,48 @@ fn should_lint(
 ) {
     let mut v = Vec::<String>::new();
     let _ = v.iter_mut().filter(|&ref a| a.is_empty());
+    //~^ needless_borrowed_reference
 
     let var = 3;
     let thingy = Some(&var);
     if let Some(&ref v) = thingy {}
+    //~^ needless_borrowed_reference
 
     if let &[&ref a, ref b] = slice_of_refs {}
+    //~^ needless_borrowed_reference
 
     let &[ref a, ..] = &array;
+    //~^ needless_borrowed_reference
     let &[ref a, ref b, ..] = &array;
+    //~^ needless_borrowed_reference
 
     if let &[ref a, ref b] = slice {}
+    //~^ needless_borrowed_reference
     if let &[ref a, ref b] = &vec[..] {}
+    //~^ needless_borrowed_reference
 
     if let &[ref a, ref b, ..] = slice {}
+    //~^ needless_borrowed_reference
     if let &[ref a, .., ref b] = slice {}
+    //~^ needless_borrowed_reference
     if let &[.., ref a, ref b] = slice {}
+    //~^ needless_borrowed_reference
 
     if let &[ref a, _] = slice {}
+    //~^ needless_borrowed_reference
 
     if let &(ref a, ref b, ref c) = &tuple {}
+    //~^ needless_borrowed_reference
     if let &(ref a, _, ref c) = &tuple {}
+    //~^ needless_borrowed_reference
     if let &(ref a, ..) = &tuple {}
+    //~^ needless_borrowed_reference
 
     if let &TupleStruct(ref a, ..) = &tuple_struct {}
+    //~^ needless_borrowed_reference
 
     if let &Struct {
+        //~^ needless_borrowed_reference
         ref a,
         b: ref b,
         c: ref renamed,
@@ -61,6 +76,7 @@ fn should_lint(
     {}
 
     if let &Struct { ref a, b: _, .. } = &s {}
+    //~^ needless_borrowed_reference
 }
 
 fn should_not_lint(
@@ -72,7 +88,7 @@ fn should_not_lint(
     tuple_struct: TupleStruct,
     s: Struct,
 ) {
-    if let [ref a] = slice {}
+    if let [a] = slice {}
     if let &[ref a, b] = slice {}
     if let &[ref a, .., b] = slice {}
 
@@ -104,6 +120,50 @@ fn should_not_lint(
         // here, v is borrowed as immutable.
         // can't do that:
         //*v = 15;
+    }
+}
+
+fn should_lint_mut_ref(x: Option<&mut i32>) {
+    if let Some(&mut ref mut x) = x {
+        //~^ needless_borrowed_reference
+        *x = 0;
+    }
+}
+
+fn should_not_lint_mut_ref_nested(x: Option<&mut &mut i32>) {
+    if let Some(&mut &mut ref mut x) = x {
+        *x = 0;
+    }
+}
+
+fn should_not_lint_mut_ref_used_after(x: Option<&mut i32>) -> Option<&mut i32> {
+    if let Some(&mut ref mut x) = x {
+        *x = 0;
+    }
+    x
+}
+
+struct WithDrop<'a>(Option<&'a mut i32>);
+impl Drop for WithDrop<'_> {
+    fn drop(&mut self) {}
+}
+
+fn should_not_lint_mut_ref_drop(x: WithDrop<'_>) {
+    if let Some(&mut ref mut x) = x.0 {
+        *x = 0;
+    }
+}
+
+fn identity<T>(value: T) -> T {
+    value
+}
+
+fn inferred_scrutinee(reference: &mut i32) {
+    let val = identity(Some(reference));
+
+    if let Some(&mut ref mut x) = val {
+        //~^ needless_borrowed_reference
+        *x = 0;
     }
 }
 

@@ -3,7 +3,7 @@
 trait Bar {
     // lint
     fn baz(&self) -> Box<usize>;
-    //~^ ERROR: boxed return of the sized type `usize`
+    //~^ unnecessary_box_returns
 }
 
 pub struct Foo {}
@@ -17,7 +17,8 @@ impl Bar for Foo {
 
 impl Foo {
     fn baz(&self) -> Box<usize> {
-        //~^ ERROR: boxed return of the sized type `usize`
+        //~^ unnecessary_box_returns
+
         // lint
         Box::new(13)
     }
@@ -25,13 +26,15 @@ impl Foo {
 
 // lint
 fn bxed_usize() -> Box<usize> {
-    //~^ ERROR: boxed return of the sized type `usize`
+    //~^ unnecessary_box_returns
+
     Box::new(5)
 }
 
 // lint
 fn _bxed_foo() -> Box<Foo> {
-    //~^ ERROR: boxed return of the sized type `Foo`
+    //~^ unnecessary_box_returns
+
     Box::new(Foo {})
 }
 
@@ -66,6 +69,23 @@ impl HasHuge {
     fn into_huge(self) -> Box<Huge> {
         self.0
     }
+}
+
+// don't lint (issue #17202): the size of `[T; N]` depends on a const generic parameter
+fn const_generic_array<const N: usize, T>(value: Box<[T; N]>) -> Box<[T; N]> {
+    value
+}
+
+// don't lint (issue #17202): the size of `[T; 10]` depends on the generic element type
+fn generic_element_array<T>(value: Box<[T; 10]>) -> Box<[T; 10]> {
+    value
+}
+
+// lint: the size of `Vec<T>` is known regardless of the generic element type
+#[expect(clippy::box_collection)]
+fn generic_vec<T>(value: Box<Vec<T>>) -> Box<Vec<T>> {
+    //~^ unnecessary_box_returns
+    value
 }
 
 fn main() {

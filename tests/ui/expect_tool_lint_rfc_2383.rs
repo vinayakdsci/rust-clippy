@@ -10,7 +10,6 @@
 //! This test can't cover every lint from Clippy, rustdoc and potentially other
 //! tools that will be developed. This therefore only tests a small subset of lints
 #![expect(rustdoc::missing_crate_level_docs)]
-#![allow(clippy::needless_if)]
 
 mod rustc_ok {
     //! See <https://doc.rust-lang.org/rustc/lints/index.html>
@@ -30,11 +29,14 @@ mod rustc_warn {
     #[expect(dead_code)]
     //~^ ERROR: this lint expectation is unfulfilled
     //~| NOTE: `-D unfulfilled-lint-expectations` implied by `-D warnings`
+    //~| HELP: to override `-D warnings` add `#[allow(unfulfilled_lint_expectations)]`
     pub fn rustc_lints() {
         let x = 42;
 
         #[expect(invalid_nan_comparisons)]
         //~^ ERROR: this lint expectation is unfulfilled
+        //~| NOTE: duplicate diagnostic emitted due to `-Z deduplicate-diagnostics=no`
+        //~| ERROR: this lint expectation is unfulfilled
         let _b = x == 5;
     }
 }
@@ -72,7 +74,7 @@ pub mod rustdoc_warn {
 }
 
 mod clippy_ok {
-    //! See <https://rust-lang.github.io/rust-clippy/master/index.html>
+    //! See <https://rust-lang.github.io/rust-clippy/main/index.html>
 
     #[expect(clippy::almost_swapped)]
     fn foo() {
@@ -102,7 +104,7 @@ mod clippy_ok {
 }
 
 mod clippy_warn {
-    //! See <https://rust-lang.github.io/rust-clippy/master/index.html>
+    //! See <https://rust-lang.github.io/rust-clippy/main/index.html>
 
     #[expect(clippy::almost_swapped)]
     //~^ ERROR: this lint expectation is unfulfilled

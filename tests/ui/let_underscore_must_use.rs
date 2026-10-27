@@ -1,5 +1,5 @@
 #![warn(clippy::let_underscore_must_use)]
-#![allow(clippy::unnecessary_wraps)]
+#![expect(clippy::unnecessary_wraps)]
 
 // Debug implementations can fire this lint,
 // so we shouldn't lint external macros
@@ -65,43 +65,69 @@ impl Trait for S {
 
 fn main() {
     let _ = f();
-    //~^ ERROR: non-binding `let` on a result of a `#[must_use]` function
+    //~^ let_underscore_must_use
+
     let _ = g();
-    //~^ ERROR: non-binding `let` on an expression with `#[must_use]` type
+    //~^ let_underscore_must_use
+
     let _ = h();
     let _ = l(0_u32);
-    //~^ ERROR: non-binding `let` on a result of a `#[must_use]` function
+    //~^ let_underscore_must_use
 
     let s = S {};
 
     let _ = s.f();
-    //~^ ERROR: non-binding `let` on a result of a `#[must_use]` function
+    //~^ let_underscore_must_use
+
     let _ = s.g();
-    //~^ ERROR: non-binding `let` on an expression with `#[must_use]` type
+    //~^ let_underscore_must_use
+
     let _ = s.k();
 
     let _ = S::h();
-    //~^ ERROR: non-binding `let` on a result of a `#[must_use]` function
+    //~^ let_underscore_must_use
+
     let _ = S::p();
-    //~^ ERROR: non-binding `let` on an expression with `#[must_use]` type
+    //~^ let_underscore_must_use
 
     let _ = S::a();
-    //~^ ERROR: non-binding `let` on a result of a `#[must_use]` function
+    //~^ let_underscore_must_use
 
     let _ = if true { Ok(()) } else { Err(()) };
-    //~^ ERROR: non-binding `let` on an expression with `#[must_use]` type
+    //~^ let_underscore_must_use
+
+    let _: Result<(), ()> = if true { Ok(()) } else { Err(()) };
+    //~^ let_underscore_must_use
 
     let a = Result::<(), ()>::Ok(());
 
     let _ = a.is_ok();
-    //~^ ERROR: non-binding `let` on a result of a `#[must_use]` function
+    //~^ let_underscore_must_use
 
     let _ = a.map(|_| ());
-    //~^ ERROR: non-binding `let` on an expression with `#[must_use]` type
+    //~^ let_underscore_must_use
 
     let _ = a;
-    //~^ ERROR: non-binding `let` on an expression with `#[must_use]` type
+    //~^ let_underscore_must_use
+
+    enum Uninhabited {}
 
     #[allow(clippy::let_underscore_must_use)]
     let _ = a;
+
+    // No lint because this type should behave as `()`
+    let _ = Result::<_, !>::Ok(());
+
+    // No lint because this type should behave as `()`
+    let _ = Result::<_, Uninhabited>::Ok(());
+    #[must_use]
+    struct T;
+
+    // Lint because this type should behave as `T`
+    let _ = Result::<_, !>::Ok(T);
+    //~^ let_underscore_must_use
+
+    // Lint because this type should behave as `T`
+    let _ = Result::<_, Uninhabited>::Ok(T);
+    //~^ let_underscore_must_use
 }

@@ -1,7 +1,8 @@
-use clippy_utils::diagnostics::{span_lint, span_lint_and_help};
-use clippy_utils::source::snippet_opt;
+use clippy_utils::diagnostics::{span_lint, span_lint_and_then};
+use clippy_utils::source::SpanExt as _;
+use itertools::Itertools as _;
 use rustc_ast::ast::{Pat, PatKind};
-use rustc_lint::EarlyContext;
+use rustc_lint::{EarlyContext, LintContext as _};
 
 use super::UNNEEDED_FIELD_PATTERN;
 
@@ -21,19 +22,25 @@ pub(super) fn check(cx: &EarlyContext<'_>, pat: &Pat) {
             }
         }
         if !pfields.is_empty() && wilds == pfields.len() {
-            span_lint_and_help(
-                cx,
-                UNNEEDED_FIELD_PATTERN,
-                pat.span,
-                "all the struct fields are matched to a wildcard pattern, consider using `..`",
-                None,
-                format!("try with `{type_name} {{ .. }}` instead"),
-            );
+            if !pat.span.in_external_macro(cx.sess().source_map()) {
+                #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+                span_lint_and_then(
+                    cx,
+                    UNNEEDED_FIELD_PATTERN,
+                    pat.span,
+                    "all the struct fields are matched to a wildcard pattern, consider using `..`",
+                    |diag| {
+                        diag.help(format!("try with `{type_name} {{ .. }}` instead"));
+                    },
+                );
+            }
             return;
         }
         if wilds > 0 {
             for field in pfields {
-                if let PatKind::Wild = field.pat.kind {
+                if let PatKind::Wild = field.pat.kind
+                    && !field.span.in_external_macro(cx.sess().source_map())
+                {
                     wilds -= 1;
                     if wilds > 0 {
                         span_lint(
@@ -43,27 +50,24 @@ pub(super) fn check(cx: &EarlyContext<'_>, pat: &Pat) {
                             "you matched a field with a wildcard pattern, consider using `..` instead",
                         );
                     } else {
-                        let mut normal = vec![];
-
-                        for field in pfields {
-                            match field.pat.kind {
-                                PatKind::Wild => {},
-                                _ => {
-                                    if let Some(n) = snippet_opt(cx, field.span) {
-                                        normal.push(n);
-                                    }
-                                },
-                            }
-                        }
-
-                        span_lint_and_help(
+                        #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+                        span_lint_and_then(
                             cx,
                             UNNEEDED_FIELD_PATTERN,
                             field.span,
-                            "you matched a field with a wildcard pattern, consider using `..` \
-                             instead",
-                            None,
-                            format!("try with `{type_name} {{ {}, .. }}`", normal[..].join(", ")),
+                            "you matched a field with a wildcard pattern, consider using `..` instead",
+                            |diag| {
+                                diag.help(format!(
+                                    "try with `{type_name} {{ {}, .. }}`",
+                                    pfields
+                                        .iter()
+                                        .filter_map(|f| match f.pat.kind {
+                                            PatKind::Wild => None,
+                                            _ => f.span.get_text(cx),
+                                        })
+                                        .format(", "),
+                                ));
+                            },
                         );
                     }
                 }

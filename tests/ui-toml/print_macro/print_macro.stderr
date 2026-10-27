@@ -1,5 +1,5 @@
 error: use of `print!`
-  --> tests/ui-toml/print_macro/print_macro.rs:6:5
+  --> tests/ui-toml/print_macro/print_macro.rs:5:5
    |
 LL |     print!("{n}");
    |     ^^^^^^^^^^^^^

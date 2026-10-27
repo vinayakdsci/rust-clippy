@@ -1,4 +1,6 @@
-#![allow(clippy::unit_arg, clippy::no_effect)]
+//@ check-pass
+
+#![expect(clippy::no_effect, clippy::unit_arg)]
 
 const fn v(_: ()) {}
 

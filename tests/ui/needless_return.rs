@@ -1,13 +1,11 @@
+//@aux-build:proc_macros.rs
 #![feature(yeet_expr)]
-#![allow(unused)]
-#![allow(
-    clippy::if_same_then_else,
-    clippy::single_match,
-    clippy::needless_bool,
-    clippy::equatable_if_let,
-    clippy::needless_else
-)]
 #![warn(clippy::needless_return)]
+#![allow(clippy::single_match)]
+#![expect(clippy::if_same_then_else, clippy::missing_safety_doc, clippy::needless_bool)]
+
+extern crate proc_macros;
+use proc_macros::with_span;
 
 use std::cell::RefCell;
 
@@ -23,35 +21,43 @@ fn test_end_of_fn() -> bool {
         return true;
     }
     return true;
+    //~^ needless_return
 }
 
 fn test_no_semicolon() -> bool {
     return true;
+    //~^ needless_return
 }
 
 #[rustfmt::skip]
 fn test_multiple_semicolon() -> bool {
     return true;;;
+    //~^ needless_return
 }
 
 #[rustfmt::skip]
 fn test_multiple_semicolon_with_spaces() -> bool {
     return true;; ; ;
+    //~^ needless_return
 }
 
 fn test_if_block() -> bool {
     if true {
         return true;
+        //~^ needless_return
     } else {
         return false;
+        //~^ needless_return
     }
 }
 
 fn test_match(x: bool) -> bool {
     match x {
         true => return false,
+        //~^ needless_return
         false => {
             return true;
+            //~^ needless_return
         },
     }
 }
@@ -59,23 +65,29 @@ fn test_match(x: bool) -> bool {
 fn test_closure() {
     let _ = || {
         return true;
+        //~^ needless_return
     };
     let _ = || return true;
+    //~^ needless_return
 }
 
 fn test_macro_call() -> i32 {
     return the_answer!();
+    //~^ needless_return
 }
 
 fn test_void_fun() {
     return;
+    //~^ needless_return
 }
 
 fn test_void_if_fun(b: bool) {
     if b {
         return;
+        //~^ needless_return
     } else {
         return;
+        //~^ needless_return
     }
 }
 
@@ -83,6 +95,7 @@ fn test_void_match(x: u32) {
     match x {
         0 => (),
         _ => return,
+        //~^ needless_return
     }
 }
 
@@ -92,8 +105,10 @@ fn test_nested_match(x: u32) {
         1 => {
             let _ = 42;
             return;
+            //~^ needless_return
         },
         _ => return,
+        //~^ needless_return
     }
 }
 
@@ -107,8 +122,10 @@ fn borrows_but_not_last(value: bool) -> String {
         let x = RefCell::<String>::default();
         let _a = x.borrow().clone();
         return String::from("test");
+        //~^ needless_return
     } else {
         return String::new();
+        //~^ needless_return
     }
 }
 
@@ -131,19 +148,23 @@ mod issue6501 {
     #[allow(clippy::unnecessary_lazy_evaluations)]
     fn foo(bar: Result<(), ()>) {
         bar.unwrap_or_else(|_| return)
+        //~^ needless_return
     }
 
     fn test_closure() {
         let _ = || {
             return;
+            //~^ needless_return
         };
         let _ = || return;
+        //~^ needless_return
     }
 
     struct Foo;
     #[allow(clippy::unnecessary_lazy_evaluations)]
     fn bar(res: Result<Foo, u8>) -> Foo {
         res.unwrap_or_else(|_| return Foo)
+        //~^ needless_return
     }
 }
 
@@ -153,25 +174,31 @@ async fn async_test_end_of_fn() -> bool {
         return true;
     }
     return true;
+    //~^ needless_return
 }
 
 async fn async_test_no_semicolon() -> bool {
     return true;
+    //~^ needless_return
 }
 
 async fn async_test_if_block() -> bool {
     if true {
         return true;
+        //~^ needless_return
     } else {
         return false;
+        //~^ needless_return
     }
 }
 
 async fn async_test_match(x: bool) -> bool {
     match x {
         true => return false,
+        //~^ needless_return
         false => {
             return true;
+            //~^ needless_return
         },
     }
 }
@@ -179,23 +206,29 @@ async fn async_test_match(x: bool) -> bool {
 async fn async_test_closure() {
     let _ = || {
         return true;
+        //~^ needless_return
     };
     let _ = || return true;
+    //~^ needless_return
 }
 
 async fn async_test_macro_call() -> i32 {
     return the_answer!();
+    //~^ needless_return
 }
 
 async fn async_test_void_fun() {
     return;
+    //~^ needless_return
 }
 
 async fn async_test_void_if_fun(b: bool) {
     if b {
         return;
+        //~^ needless_return
     } else {
         return;
+        //~^ needless_return
     }
 }
 
@@ -203,6 +236,7 @@ async fn async_test_void_match(x: u32) {
     match x {
         0 => (),
         _ => return,
+        //~^ needless_return
     }
 }
 
@@ -216,8 +250,10 @@ async fn async_borrows_but_not_last(value: bool) -> String {
         let x = RefCell::<String>::default();
         let _a = x.borrow().clone();
         return String::from("test");
+        //~^ needless_return
     } else {
         return String::new();
+        //~^ needless_return
     }
 }
 
@@ -234,20 +270,52 @@ fn needless_return_macro() -> String {
     let _ = "foo";
     let _ = "bar";
     return format!("Hello {}", "world!");
+    //~^ needless_return
 }
 
-fn issue_9361() -> i32 {
-    let n = 1;
-    #[allow(clippy::arithmetic_side_effects)]
+fn issue_9361(n: i32) -> i32 {
+    #[expect(clippy::arithmetic_side_effects)]
     return n + n;
+}
+
+mod issue_12998 {
+    fn expect_lint() -> i32 {
+        let x = 1;
+
+        #[expect(clippy::needless_return)]
+        return x;
+    }
+
+    fn expect_group() -> i32 {
+        let x = 1;
+
+        #[expect(clippy::style)]
+        return x;
+    }
+
+    fn expect_all() -> i32 {
+        let x = 1;
+
+        #[expect(clippy::all)]
+        return x;
+    }
+
+    fn expect_warnings() -> i32 {
+        let x = 1;
+
+        #[expect(warnings)]
+        return x;
+    }
 }
 
 fn issue8336(x: i32) -> bool {
     if x > 0 {
         println!("something");
         return true;
+        //~^ needless_return
     } else {
         return false;
+        //~^ needless_return
     };
 }
 
@@ -255,9 +323,11 @@ fn issue8156(x: u8) -> u64 {
     match x {
         80 => {
             return 10;
+            //~^ needless_return
         },
         _ => {
             return 100;
+            //~^ needless_return
         },
     };
 }
@@ -266,6 +336,7 @@ fn issue8156(x: u8) -> u64 {
 fn issue9192() -> i32 {
     {
         return 0;
+        //~^ needless_return
     };
 }
 
@@ -273,8 +344,10 @@ fn issue9503(x: usize) -> isize {
     unsafe {
         if x > 12 {
             return *(x as *const isize);
+            //~^ needless_return
         } else {
             return !*(x as *const isize);
+            //~^ needless_return
         };
     };
 }
@@ -282,13 +355,14 @@ fn issue9503(x: usize) -> isize {
 mod issue9416 {
     pub fn with_newline() {
         let _ = 42;
-
         return;
+        //~^ needless_return
     }
 
     #[rustfmt::skip]
     pub fn oneline() {
         let _ = 42; return;
+        //~^ needless_return
     }
 }
 
@@ -301,18 +375,22 @@ fn issue9947() -> Result<(), String> {
 fn issue10051() -> Result<String, String> {
     if true {
         return Ok(format!("ok!"));
+        //~^ needless_return
     } else {
         return Err(format!("err!"));
+        //~^ needless_return
     }
 }
 
 mod issue10049 {
     fn single() -> u32 {
         return if true { 1 } else { 2 };
+        //~^ needless_return
     }
 
     fn multiple(b1: bool, b2: bool, b3: bool) -> u32 {
         return if b1 { 0 } else { 1 } | if b2 { 2 } else { 3 } | if b3 { 4 } else { 5 };
+        //~^ needless_return
     }
 }
 
@@ -334,6 +412,117 @@ fn allow_works() -> i32 {
 
 fn conjunctive_blocks() -> String {
     return { "a".to_string() } + "b" + { "c" };
+    //~^ needless_return
+}
+
+fn issue12907() -> String {
+    return "".split("").next().unwrap().to_string();
+    //~^ needless_return
+}
+
+fn issue13458() {
+    with_span!(span return);
 }
 
 fn main() {}
+
+fn a(x: Option<u8>) -> Option<u8> {
+    match x {
+        Some(_) => None,
+        None => {
+            #[expect(clippy::needless_return, reason = "Use early return for errors.")]
+            return None;
+        },
+    }
+}
+
+fn b(x: Option<u8>) -> Option<u8> {
+    match x {
+        Some(_) => None,
+        None => {
+            #[expect(clippy::needless_return)]
+            return None;
+        },
+    }
+}
+
+unsafe fn todo() -> *const u8 {
+    todo!()
+}
+
+pub unsafe fn issue_12157() -> *const i32 {
+    return unsafe { todo() } as *const i32;
+    //~^ needless_return
+}
+
+mod else_ifs {
+    fn test1(a: i32) -> u32 {
+        if a == 0 {
+            return 1;
+        //~^ needless_return
+        } else if a < 10 {
+            return 2;
+        //~^ needless_return
+        } else {
+            return 3;
+            //~^ needless_return
+        }
+    }
+
+    fn test2(a: i32) -> u32 {
+        if a == 0 {
+            return 1;
+        //~^ needless_return
+        } else if a < 10 {
+            2
+        } else {
+            return 3;
+            //~^ needless_return
+        }
+    }
+
+    fn test3(a: i32) -> u32 {
+        if a == 0 {
+            return 1;
+        //~^ needless_return
+        } else if a < 10 {
+            2
+        } else {
+            return 3;
+            //~^ needless_return
+        }
+    }
+
+    #[allow(clippy::match_single_binding, clippy::redundant_pattern)]
+    fn test4(a: i32) -> u32 {
+        if a == 0 {
+            return 1;
+            //~^ needless_return
+        } else if if if a > 0x1_1 {
+            return 2;
+        } else {
+            return 5;
+        } {
+            true
+        } else {
+            true
+        } {
+            0xDEADC0DE
+        } else if match a {
+            b @ _ => {
+                return 1;
+            },
+        } {
+            0xDEADBEEF
+        } else {
+            1
+        }
+    }
+}
+
+fn issue14474() -> u64 {
+    return 456;
+
+    #[cfg(false)]
+    123
+}

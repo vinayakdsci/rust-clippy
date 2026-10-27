@@ -1,8 +1,7 @@
-// does not test any rustfixable lints
-//@no-rustfix
+//@no-rustfix: suggestions have an error margin placeholder
 #![warn(clippy::float_cmp_const)]
-#![allow(clippy::float_cmp)]
-#![allow(unused, clippy::no_effect, clippy::unnecessary_operation)]
+#![expect(clippy::float_cmp)]
+#![allow(clippy::no_effect, clippy::unnecessary_operation)]
 
 const ONE: f32 = 1.0;
 const TWO: f32 = 2.0;
@@ -14,29 +13,27 @@ fn eq_one(x: f32) -> bool {
 fn main() {
     // has errors
     1f32 == ONE;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
+
     TWO == ONE;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
+
     TWO != ONE;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
+
     ONE + ONE == TWO;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
+
     let x = 1;
     x as f32 == ONE;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
 
     let v = 0.9;
     v == ONE;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
+
     v != ONE;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
 
     // no errors, lower than or greater than comparisons
     v < ONE;
@@ -49,6 +46,17 @@ fn main() {
     TWO == 0f32;
     ONE != f32::INFINITY;
     ONE == f32::NEG_INFINITY;
+
+    // assert_eq with const floats
+    assert_eq!(ONE, 1.0);
+    //~^ float_cmp_const
+
+    assert_ne!(ONE, 2.0);
+    //~^ float_cmp_const
+
+    let local = 0.9;
+    assert_eq!(local, ONE);
+    //~^ float_cmp_const
 
     // no errors, but will warn clippy::float_cmp if '#![allow(float_cmp)]' above is removed
     let w = 1.1;
@@ -69,6 +77,5 @@ fn main() {
 
     // has errors
     NON_ZERO_ARRAY == NON_ZERO_ARRAY2;
-    //~^ ERROR: strict comparison of `f32` or `f64` constant arrays
-    //~| NOTE: `f32::EPSILON` and `f64::EPSILON` are available for the `error_margin`
+    //~^ float_cmp_const
 }

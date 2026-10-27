@@ -1,6 +1,4 @@
-#![allow(unused)]
 #![warn(clippy::needless_else)]
-#![allow(clippy::suspicious_else_formatting)]
 
 macro_rules! mac {
     ($test:expr) => {
@@ -22,6 +20,7 @@ fn main() {
         println!("Foobar");
     } else {
     }
+    //~^^ needless_else
 
     if b {
         println!("Foobar");

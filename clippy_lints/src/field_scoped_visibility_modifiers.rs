@@ -1,7 +1,6 @@
-use clippy_utils::diagnostics::span_lint_and_help;
+use clippy_utils::diagnostics::span_lint_and_then;
 use rustc_ast::ast::{Item, ItemKind, VisibilityKind};
-use rustc_lint::{EarlyContext, EarlyLintPass};
-use rustc_session::declare_lint_pass;
+use rustc_lint::{EarlyContext, EarlyLintPass, declare_lint_pass};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -41,17 +40,19 @@ declare_clippy_lint! {
     ///     }
     /// }
     /// ```
-    #[clippy::version = "1.78.0"]
+    #[clippy::version = "1.81.0"]
     pub FIELD_SCOPED_VISIBILITY_MODIFIERS,
     restriction,
     "checks for usage of a scoped visibility modifier, like `pub(crate)`, on fields"
 }
 
-declare_lint_pass!(FieldScopedVisibilityModifiers => [FIELD_SCOPED_VISIBILITY_MODIFIERS]);
+declare_lint_pass!(FieldScopedVisibilityModifiers => [
+    FIELD_SCOPED_VISIBILITY_MODIFIERS,
+]);
 
 impl EarlyLintPass for FieldScopedVisibilityModifiers {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &Item) {
-        let ItemKind::Struct(ref st, _) = item.kind else {
+        let ItemKind::Struct(_, _, ref st) = item.kind else {
             return;
         };
         for field in st.fields() {
@@ -62,13 +63,15 @@ impl EarlyLintPass for FieldScopedVisibilityModifiers {
                 // pub(self) is equivalent to not using pub at all, so we ignore it
                 continue;
             }
-            span_lint_and_help(
+            #[expect(clippy::collapsible_span_lint_calls, reason = "rust-clippy#7797")]
+            span_lint_and_then(
                 cx,
                 FIELD_SCOPED_VISIBILITY_MODIFIERS,
                 field.vis.span,
                 "scoped visibility modifier on a field",
-                None,
-                "consider making the field private and adding a scoped visibility method for it",
+                |diag| {
+                    diag.help("consider making the field private and adding a scoped visibility method for it");
+                },
             );
         }
     }

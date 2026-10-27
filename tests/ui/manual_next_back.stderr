@@ -1,5 +1,5 @@
 error: manual backwards iteration
-  --> tests/ui/manual_next_back.rs:32:20
+  --> tests/ui/manual_next_back.rs:31:20
    |
 LL |     let _ = (0..10).rev().next().unwrap();
    |                    ^^^^^^^^^^^^^ help: use: `.next_back()`

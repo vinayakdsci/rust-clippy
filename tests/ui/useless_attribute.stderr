@@ -1,5 +1,5 @@
 error: useless lint attribute
-  --> tests/ui/useless_attribute.rs:8:1
+  --> tests/ui/useless_attribute.rs:7:1
    |
 LL | #[allow(dead_code)]
    | ^^^^^^^^^^^^^^^^^^^ help: if you just forgot a `!`, use: `#![allow(dead_code)]`
@@ -14,7 +14,7 @@ LL | #[cfg_attr(clippy, allow(dead_code))]
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: if you just forgot a `!`, use: `#![cfg_attr(clippy, allow(dead_code)`
 
 error: useless lint attribute
-  --> tests/ui/useless_attribute.rs:20:5
+  --> tests/ui/useless_attribute.rs:21:5
    |
 LL |     #[allow(clippy::almost_swapped)]
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: if you just forgot a `!`, use: `#![allow(clippy::almost_swapped)]`
